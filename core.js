@@ -64,7 +64,11 @@ function tt_parseDiscord(text) {
     var di = -1;
     for (var i = 0; i < lines.length; i++) if (/^\W*(Mon|Tues|Wednes|Thurs|Fri|Satur|Sun)day,\s+[A-Za-z]+\s+\d{1,2},\s+\d{4}/.test(lines[i])) { di = i; break; }
     if (di < 1) return;
-    var tierLine = di >= 2 ? lines[di - 2] : '';
+    // Event (artist) name = the line just above the date. Skip anything that is not a real name
+    // (emoji-only lines, timestamps, dates, the "PROFITABLE/LOSS" tier line, bot name).
+    var ei = di - 1;
+    while (ei > 0 && tt_notAName(lines[ei])) ei--;
+    var tierLine = ei >= 1 ? lines[ei - 1] : '';
     var m = b.match(/Section (.+?) • Row (.+?) • Qty: (\d+)/);
     if (!m) return;
     var notes = '';
@@ -78,7 +82,7 @@ function tt_parseDiscord(text) {
       soldAt: tt_parseDate(after('Sold')),
       soldRaw: after('Sold'),
       result: tierLine.replace(/^[^A-Za-z]+/, ''),
-      event: lines[di - 1],
+      event: lines[ei].replace(/^[^A-Za-z0-9]+/, '').trim(),
       eventDate: tt_parseDate(lines[di]),
       venue: (lines[di + 1] || '').replace(/^[^A-Za-z0-9]+/, ''),
       section: m[1].replace(/^SECTION\s+/i, '').trim(),
@@ -105,9 +109,23 @@ function tt_parseDiscord(text) {
   return out;
 }
 
+function tt_looksLikeDate(s) {
+  s = String(s || '').trim();
+  return /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\.?[,\s•]/i.test(s) ||
+    /^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2}\b/i.test(s) ||
+    /^\d{1,2}\/\d{1,2}\/\d{2,4}/.test(s) || /^(Today|Yesterday) at /i.test(s) || /^\d{1,2}:\d{2}\s*[AP]M$/i.test(s);
+}
+function tt_notAName(s) {
+  s = String(s || '').trim();
+  return !/[A-Za-z0-9]/.test(s) || tt_looksLikeDate(s) || /^—/.test(s) || s === 'APP';
+}
+
 function tt_saleKey(s) {
   var d = s.soldAt ? tt_dayKey(s.soldAt) + ' ' + s.soldAt.getHours() + ':' + s.soldAt.getMinutes() : s.soldRaw;
-  return [d, s.event, s.section, s.row, s.qty, Number(s.total).toFixed(2)].join('|');
+  // Same Discord message grabbed twice -> same key -> saved once.
+  // Two different sales (different time, seats, price, marketplace or order) -> different keys -> both saved.
+  return [d, s.event, s.section, s.row, s.qty, Number(s.total).toFixed(2), String(s.marketplace || '').trim(),
+    (s.orders || []).slice().sort().join(',')].join('|');
 }
 
 /** Best-guess artist name from a raw event title. */
@@ -276,5 +294,5 @@ function tt_build(orders, sales, overrides, today) {
 
 if (typeof module !== 'undefined') module.exports = {
   parseDiscord: tt_parseDiscord, build: tt_build, baseArtist: tt_baseArtist, parseDate: tt_parseDate,
-  monthKey: tt_monthKey, seatCount: tt_seatCount, saleKey: tt_saleKey
+  monthKey: tt_monthKey, seatCount: tt_seatCount, saleKey: tt_saleKey, looksLikeDate: tt_looksLikeDate
 };
