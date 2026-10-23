@@ -617,7 +617,8 @@
   // ---------- auth / boot ----------
   function cfg() {
     var c = window.TRACKER_CONFIG || {};
-    return {url: c.supabaseUrl || lsGet('tt_url') || '', key: c.supabaseAnonKey || lsGet('tt_key') || ''};
+    var url = String(c.supabaseUrl || lsGet('tt_url') || '').trim().replace(/\/+$/, '').replace(/\/(rest|auth)\/v1.*$/i, '').replace(/\/+$/, '');
+    return {url: url, key: String(c.supabaseAnonKey || lsGet('tt_key') || '').trim()};
   }
   function showScreen(id) { ['#setup', '#login', '#app'].forEach(function (s) { $(s).hidden = s !== id; }); }
 
@@ -638,7 +639,7 @@
       showScreen('#setup');
       $('#setupForm').onsubmit = async function (e) {
         e.preventDefault();
-        var url = $('#sbUrl').value.trim().replace(/\/+$/, '').replace(/\/(rest|auth)\/v1.*$/, ''), key = $('#sbKey').value.trim();
+        var url = $('#sbUrl').value.trim().replace(/\/+$/, '').replace(/\/(rest|auth)\/v1.*$/i, '').replace(/\/+$/, ''), key = $('#sbKey').value.trim();
         if (!/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(url)) { toast('Project URL should look like https://abcdefgh.supabase.co (copy it from Supabase → Settings → Data API).', true); return; }
         var ok = false, status = 0;
         try { var res = await fetch(url + '/auth/v1/settings', {headers: {apikey: key}}); status = res.status; ok = res.ok; } catch (err) { status = -1; }
