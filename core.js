@@ -157,7 +157,7 @@ function tt_baseArtist(raw) {
   s = s.replace(/\s+Live(\s+'\d\d|\s+in\s+.+)?$/i, '').replace(/\s+(19|20)\d\d$/, '');
   s = s.replace(/\s+&\s+/g, ' and ').replace(/\s+/g, ' ').trim();
   if (s && s === s.toUpperCase() && /[A-Z]{3}/.test(s)) {
-    s = s.toLowerCase().replace(/\b([a-z])/g, function (c) { return c.toUpperCase(); });
+    s = s.toLowerCase().replace(/(^|[\s\-\/(&.])([a-z])/g, function (m, p, c) { return p + c.toUpperCase(); });
   }
   return s || String(raw || '').trim();
 }
