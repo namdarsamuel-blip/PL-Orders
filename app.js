@@ -38,18 +38,34 @@
 
   // ---------- row mapping ----------
   var ORDER_FIELDS = ['order_number', 'email', 'event_name', 'event_date_raw', 'seats', 'quantity', 'buyer', 'date_bought_raw', 'card', 'total', 'price_per_ticket', 'site'];
-  var CSV_MAP = {
-    'order number': 'order_number', 'email used': 'email', 'event name': 'event_name', 'event date': 'event_date_raw',
-    'section & row & seat #s': 'seats', 'quantity': 'quantity', 'buyer': 'buyer', 'date bought': 'date_bought_raw',
-    'last 4 cc': 'card', 'total price': 'total', 'price per ticket': 'price_per_ticket', 'site': 'site'
-  };
+  // Matches the PL sheet's column names, tolerant of small wording differences.
+  function headerKey(h) {
+    h = String(h || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    if (/order/.test(h) && /(number|#|no\b|id)/.test(h)) return 'order_number';
+    if (/^event( name)?$|event name|^show$|^artist$/.test(h)) return 'event_name';
+    if (/event date|show date|^date$/.test(h)) return 'event_date_raw';
+    if (/email/.test(h) && !/cc/.test(h)) return 'email';
+    if (/section|seat/.test(h)) return 'seats';
+    if (/^(quantity|qty)$/.test(h)) return 'quantity';
+    if (/^buyer/.test(h)) return 'buyer';
+    if (/date bought|purchase date|bought on|^purchased/.test(h)) return 'date_bought_raw';
+    if (/last 4|card|^cc/.test(h)) return 'card';
+    if (/per ticket/.test(h)) return 'price_per_ticket';
+    if (/total/.test(h)) return 'total';
+    if (/^site$|platform/.test(h)) return 'site';
+    return null;
+  }
   function csvRowToOrder(obj) {
     var r = {};
     Object.keys(obj).forEach(function (h) {
-      var k = CSV_MAP[String(h).trim().toLowerCase()];
-      if (k) r[k] = obj[h] === undefined || obj[h] === null ? '' : String(obj[h]).trim();
+      var k = headerKey(h);
+      if (k && r[k] === undefined) r[k] = obj[h] === undefined || obj[h] === null ? '' : String(obj[h]).trim();
     });
     if (!r.order_number) return null;
+    // If the event name looks like a date and the date column does not, they were swapped.
+    if (tt_looksLikeDate(r.event_name) && r.event_date_raw && !tt_looksLikeDate(r.event_date_raw)) {
+      var tmp = r.event_name; r.event_name = r.event_date_raw; r.event_date_raw = tmp;
+    }
     ORDER_FIELDS.forEach(function (f) { if (r[f] === undefined || r[f] === '') r[f] = null; });
     r.quantity = r.quantity ? (parseInt(parseFloat(r.quantity), 10) || null) : null;
     r.total = r.total ? tt_money(r.total) : null;
@@ -152,6 +168,7 @@
     S.raw.orders.forEach(function (r) { S.orderIndex[r.order_number] = r; });
     S.saleIndex = {};
     S.raw.sales.forEach(function (r) { S.saleIndex[r.sale_key] = true; });
+    derive();
     if (!S.month) {
       var withSales = S.R.monthly.filter(function (m) { return m.sales; });
       S.month = withSales.length ? withSales[0].month : tt_monthKey(new Date());
@@ -238,14 +255,16 @@
     var body = shown.map(function (r, i) {
       return '<tr>' + cols.map(function (c) {
         var v = c.get(r), cls = (c.num ? 'num ' : '') + (c.signed ? signClass(v) : '') + (c.cls ? ' ' + c.cls : '');
-        return '<td class="' + cls + '"' + (c.wrap ? '' : ' style="white-space:nowrap"') + '>' + esc(fmt(v, c.fmt)) + '</td>';
+        var shownV = esc(fmt(v, c.fmt)), href = c.link ? c.link(r) : null;
+        if (href && shownV) shownV = '<a href="' + esc(href) + '">' + shownV + '</a>';
+        return '<td class="' + cls + '"' + (c.wrap ? '' : ' style="white-space:nowrap"') + '>' + shownV + '</td>';
       }).join('') + (opts.actions ? '<td class="act">' + opts.actions(r, i) + '</td>' : '') + '</tr>';
     }).join('');
     var tools = '<div class="tabletools">' +
-      (opts.searchable === false ? '' : '<input type="search" placeholder="Search…" data-search="' + id + '" value="' + esc(S.search[id] || '') + '">') +
+      (opts.searchable === false ? '' : '<input type="search" class="' + (opts.bigSearch ? 'big' : '') + '" placeholder="' + esc(opts.bigSearch || 'Search…') + '" data-search="' + id + '" value="' + esc(S.search[id] || '') + '">') +
       (opts.extraTools || '') +
       '<span class="count">' + (list.length > limit ? 'Showing ' + limit + ' of ' : '') + list.length.toLocaleString() + ' rows</span>' +
-      '<button class="ghost" data-csv="' + id + '">Download CSV</button></div>';
+      (opts.nocsv ? '' : '<button class="ghost" data-csv="' + id + '">Download CSV</button>') + '</div>';
     S._tables = S._tables || {};
     S._tables[id] = {cols: cols, rows: list};
     return tools + '<div class="tablewrap"><table data-table="' + id + '"><thead><tr>' + head + '</tr></thead><tbody>' +
@@ -339,9 +358,68 @@
     });
   }
 
+  // ---------- derived data (artists, venues, shows) ----------
+  function splitVenue(v) {
+    var p = String(v || '').split(/\s+•\s+/);
+    return {name: (p[0] || '').trim(), city: p.slice(1).join(', ').trim()};
+  }
+  function showKey(artist, d) { return artist + '|' + (d ? tt_dayKey(d) : ''); }
+  function derive() {
+    var D = {artists: {}, venues: {}, showVenue: {}};
+    S.R.sales.forEach(function (s) { if (s.venue) D.showVenue[showKey(s.artist, s.eventDate)] = s.venue; });
+    function A(n) { return D.artists[n] || (D.artists[n] = {name: n, orders: [], sales: []}); }
+    function V(full) { var v = splitVenue(full); return D.venues[v.name] || (D.venues[v.name] = {name: v.name, city: v.city, orders: [], sales: []}); }
+    S.R.orders.forEach(function (o) {
+      o.venueFull = D.showVenue[showKey(o.artist, o.eventDate)] || '';
+      A(o.artist).orders.push(o);
+      if (o.venueFull) V(o.venueFull).orders.push(o);
+    });
+    S.R.sales.forEach(function (s) {
+      A(s.artist).sales.push(s);
+      if (s.venue) V(s.venue).sales.push(s);
+    });
+    S.D = D;
+  }
+  function holding(orders) {   // tickets still in hand for upcoming shows
+    var t = 0, c = 0;
+    orders.forEach(function (o) { if (!/passed/.test(o.status)) { t += o.remaining; c += o.unsoldCost; } });
+    return {tickets: t, cost: c};
+  }
+  function artistLink(n) { return '#artist/' + encodeURIComponent(n); }
+  function venueLink(n) { return n ? '#venue/' + encodeURIComponent(n) : null; }
+
   // ---------- views ----------
   function kpi(label, value, kind, sub) {
     return '<div class="kpi"><div class="kl">' + esc(label) + '</div><div class="kv ' + (kind === 'susd' || kind === 'spct' ? signClass(value) : '') + '">' + esc(fmt(value, kind) || '—') + '</div>' + (sub ? '<div class="ks">' + esc(sub) + '</div>' : '') + '</div>';
+  }
+  function groupSales(list, keyFn) {
+    var by = {};
+    list.forEach(function (s) { var k = keyFn(s); (by[k] = by[k] || []).push(s); });
+    return Object.keys(by).map(function (k) { var a = aggSales(by[k]); a.key = k; a.list = by[k]; return a; });
+  }
+  var COL = {
+    profit: {label: 'Profit', get: function (r) { return r.profit; }, fmt: 'susd', num: true, signed: true},
+    roi: {label: 'ROI', get: function (r) { return r.roi; }, fmt: 'spct', num: true, signed: true},
+    revenue: {label: 'Revenue', get: function (r) { return r.revenue; }, fmt: 'usd', num: true},
+    sales: {label: 'Sales', get: function (r) { return r.sales; }, fmt: 'int', num: true},
+    tickets: {label: 'Tickets sold', get: function (r) { return r.tickets; }, fmt: 'int', num: true}
+  };
+  function saleCols(opts) {
+    opts = opts || {};
+    var c = [{label: 'Sold on', get: function (s) { return s.soldAt; }, fmt: 'datetime'}];
+    if (!opts.noArtist) c.push({label: 'Artist', get: function (s) { return s.artist; }, link: function (s) { return artistLink(s.artist); }});
+    c.push({label: 'Show date', get: function (s) { return s.eventDate; }, fmt: 'date'});
+    if (!opts.noVenue) c.push({label: 'Venue', get: function (s) { return splitVenue(s.venue).name; }, link: function (s) { return venueLink(splitVenue(s.venue).name); }});
+    c.push({label: 'Seats', get: function (s) { return 'Sec ' + s.section + ' · Row ' + s.row; }},
+      {label: 'Qty', get: function (s) { return s.qty; }, fmt: 'int', num: true},
+      {label: 'Paid / tkt', get: function (s) { return s.costPer; }, fmt: 'usd', num: true},
+      {label: 'Sold / tkt', get: function (s) { return s.soldPer; }, fmt: 'usd', num: true},
+      {label: 'Total sale', get: function (s) { return s.total; }, fmt: 'usd', num: true},
+      COL.profit, COL.roi,
+      {label: 'Sold on site', get: function (s) { return s.marketplace; }},
+      {label: 'Time to sell', get: function (s) { return s.timeToSell; }});
+    if (opts.orders) c.push({label: 'Order #', get: function (s) { return (s.orders || []).join(', '); }});
+    return c;
   }
 
   function viewOverview() {
@@ -349,266 +427,292 @@
     var a = aggSales(sales);
     var spent = 0, boughtTix = 0;
     S.R.orders.forEach(function (o) { if (inPeriod(o.bought)) { spent += o.total; boughtTix += o.qty; } });
-    var byArtist = {};
-    sales.forEach(function (s) { (byArtist[s.artist] = byArtist[s.artist] || []).push(s); });
-    var arts = Object.keys(byArtist).map(function (k) { var x = aggSales(byArtist[k]); x.artist = k; return x; });
+    var h = holding(S.R.orders);
+    var arts = groupSales(sales, function (s) { return s.artist; });
+    var vens = groupSales(sales.filter(function (s) { return s.venue; }), function (s) { return splitVenue(s.venue).name; });
     var sorted = sales.slice().sort(function (x, y) { return y.profit - x.profit; });
-    var saleCols = [
-      {label: 'Artist', get: function (s) { return s.artist; }},
+    var mini = [
+      {label: 'Artist', get: function (s) { return s.artist; }, link: function (s) { return artistLink(s.artist); }},
       {label: 'Seats', get: function (s) { return 'Sec ' + s.section + ' · Row ' + s.row + ' · ×' + s.qty; }},
-      {label: 'Profit', get: function (s) { return s.profit; }, fmt: 'susd', num: true, signed: true}
+      COL.profit
     ];
-    var html = '<h2>' + esc(periodLabel()) + '</h2>' +
+    return '<h2>' + esc(periodLabel()) + '</h2>' +
       '<div class="kpis">' +
-      kpi('Profit', a.profit, 'susd') + kpi('Revenue', a.revenue, 'usd') + kpi('ROI', a.roi, 'spct') +
-      kpi('Tickets sold', a.tickets, 'int', a.sales + ' sales') + kpi('Win rate', a.winRate, 'pct', a.wins + ' profitable') +
+      kpi('Profit', a.profit, 'susd') + kpi('Revenue', a.revenue, 'usd') +
+      kpi('ROI', a.roi, 'spct', a.winRate === null ? '' : fmt(a.winRate, 'pct') + ' of sales profitable') +
+      kpi('Tickets sold', a.tickets, 'int', a.sales + ' sales') +
       kpi('Spent on new orders', spent, 'usd', boughtTix.toLocaleString() + ' tickets bought') +
+      kpi('Still holding', h.tickets, 'int', fmt(h.cost, 'usd') + ' in upcoming shows') +
       '</div>' +
       '<section class="card"><h3>Profit by month</h3><p class="hint">Hover for details · click a bar to open that month</p>' + profitChart() + '</section>' +
-      '<section class="card"><h3>Profit by artist — ' + esc(periodLabel()) + '</h3>' +
-      table('period-artists', [
-        {label: 'Artist', get: function (r) { return r.artist; }},
-        {label: 'Sales', get: function (r) { return r.sales; }, fmt: 'int', num: true},
-        {label: 'Tickets', get: function (r) { return r.tickets; }, fmt: 'int', num: true},
-        {label: 'Revenue', get: function (r) { return r.revenue; }, fmt: 'usd', num: true},
-        {label: 'Cost', get: function (r) { return r.cost; }, fmt: 'usd', num: true},
-        {label: 'Profit', get: function (r) { return r.profit; }, fmt: 'susd', num: true, signed: true},
-        {label: 'ROI', get: function (r) { return r.roi; }, fmt: 'spct', num: true, signed: true},
-        {label: 'Win rate', get: function (r) { return r.winRate; }, fmt: 'pct', num: true}
-      ], arts, {sort: {label: 'Profit', dir: 'desc'}, empty: 'No sales logged in this period yet. Add some on the Import tab.'}) + '</section>' +
-      '<div class="two"><section class="card"><h3>Biggest wins</h3>' + table('wins', saleCols, sorted.filter(function (s) { return s.profit > 0; }).slice(0, 8), {searchable: false, empty: 'None yet.'}) +
-      '</section><section class="card"><h3>Biggest losses</h3>' + table('losses', saleCols, sorted.filter(function (s) { return s.profit < 0; }).reverse().slice(0, 8), {searchable: false, empty: 'No losses — nice.'}) + '</section></div>';
-    return html;
+      '<div class="two">' +
+      '<section class="card"><h3>By artist</h3>' + table('ov-artists', [
+        {label: 'Artist', get: function (r) { return r.key; }, link: function (r) { return artistLink(r.key); }},
+        COL.sales, COL.tickets, COL.profit, COL.roi
+      ], arts, {sort: {label: 'Profit', dir: 'desc'}, searchable: false, empty: 'No sales in this period yet.'}) + '</section>' +
+      '<section class="card"><h3>By venue</h3>' + table('ov-venues', [
+        {label: 'Venue', get: function (r) { return r.key; }, link: function (r) { return venueLink(r.key); }},
+        COL.sales, COL.tickets, COL.profit, COL.roi
+      ], vens, {sort: {label: 'Profit', dir: 'desc'}, searchable: false, empty: 'No sales in this period yet.'}) + '</section>' +
+      '</div>' +
+      '<div class="two"><section class="card"><h3>Biggest wins</h3>' + table('wins', mini, sorted.filter(function (s) { return s.profit > 0; }).slice(0, 8), {searchable: false, nocsv: true, empty: 'None yet.'}) +
+      '</section><section class="card"><h3>Biggest losses</h3>' + table('losses', mini, sorted.filter(function (s) { return s.profit < 0; }).reverse().slice(0, 8), {searchable: false, nocsv: true, empty: 'No losses — nice.'}) + '</section></div>';
   }
 
   function viewArtists() {
-    var by = {};
-    function A(n) { return by[n] || (by[n] = {artist: n, bought: 0, spent: 0, sold: 0, revenue: 0, cost: 0, profit: 0, sales: 0, wins: 0, open: 0, openCost: 0, dead: 0, deadCost: 0}); }
-    S.R.orders.forEach(function (o) {
-      var a = A(o.artist);
-      if (inPeriod(o.bought) || (S.year === 'all' && S.month === 'all')) { a.bought += o.qty; a.spent += o.total; }
-      if (/passed/.test(o.status)) { a.dead += o.remaining; a.deadCost += o.unsoldCost; } else { a.open += o.remaining; a.openCost += o.unsoldCost; }
+    var rows = Object.keys(S.D.artists).map(function (n) {
+      var A = S.D.artists[n];
+      var ps = A.sales.filter(function (s) { return inPeriod(s.soldAt); });
+      var a = aggSales(ps);
+      var bought = 0, spent = 0;
+      A.orders.forEach(function (o) { if (inPeriod(o.bought)) { bought += o.qty; spent += o.total; } });
+      var h = holding(A.orders);
+      var last = null; A.sales.forEach(function (s) { if (s.soldAt && (!last || s.soldAt > last)) last = s.soldAt; });
+      return {artist: n, profit: a.profit, roi: a.roi, sales: a.sales, tickets: a.tickets, revenue: a.revenue, bought: bought, spent: spent, left: h.tickets, leftCost: h.cost, last: last};
     });
-    S.R.sales.forEach(function (s) {
-      if (!inPeriod(s.soldAt)) return;
-      var a = A(s.artist); a.sold += s.qty; a.revenue += s.total; a.cost += s.total - s.profit; a.profit += s.profit; a.sales++; if (s.profit > 0) a.wins++;
-    });
-    var rows = Object.keys(by).map(function (k) { var a = by[k]; a.roi = a.cost ? a.profit / a.cost : null; return a; })
-      .filter(function (a) { return a.sales || a.bought || a.open; });
-    return '<h2>Artists — ' + esc(periodLabel()) + '</h2><p class="hint">Sales, profit and money spent follow the period you picked. "Unsold" columns are your inventory right now. Use <b>Rename</b> to fix or merge artist names (type an existing name to merge).</p>' +
+    var showAll = S.artistsAll;
+    if (!showAll) rows = rows.filter(function (r) { return r.sales || r.bought; });
+    var tools = '<label class="chk"><input type="checkbox" id="artistsAll"' + (showAll ? ' checked' : '') + '> Include artists with no activity in this period</label>';
+    return '<h2>Artists <span class="sub">' + esc(periodLabel()) + '</span></h2>' +
+      '<p class="hint">Type an artist below, then click the name to see every show, venue and sale for them.</p>' +
       '<section class="card">' + table('artists', [
-        {label: 'Artist', get: function (r) { return r.artist; }},
-        {label: 'Bought', get: function (r) { return r.bought; }, fmt: 'int', num: true},
+        {label: 'Artist', get: function (r) { return r.artist; }, link: function (r) { return artistLink(r.artist); }},
+        COL.profit, COL.roi, COL.sales, COL.tickets, COL.revenue,
+        {label: 'Tickets bought', get: function (r) { return r.bought; }, fmt: 'int', num: true},
         {label: 'Spent', get: function (r) { return r.spent; }, fmt: 'usd', num: true},
+        {label: 'Still holding', get: function (r) { return r.left; }, fmt: 'int', num: true},
+        {label: 'Last sale', get: function (r) { return r.last; }, fmt: 'date'}
+      ], rows, {sort: {label: 'Profit', dir: 'desc'}, extraTools: tools, bigSearch: 'Search artists… (e.g. Bruno Mars)', empty: 'No artists with activity in this period. Tick "Include artists with no activity" or pick another month.'}) + '</section>';
+  }
+
+  function viewArtist(name) {
+    var A = S.D.artists[name];
+    if (!A) return '<p><a href="#artists">← Artists</a></p><h2>' + esc(name) + '</h2><p class="hint">No data for this artist.</p>';
+    var a = aggSales(A.sales);
+    var bought = 0, spent = 0; A.orders.forEach(function (o) { bought += o.qty; spent += o.total; });
+    var h = holding(A.orders);
+    // shows: one row per show date
+    var shows = {};
+    function SH(d, venueFull) {
+      var k = d ? tt_dayKey(d) : 'unknown';
+      var x = shows[k] || (shows[k] = {date: d, venue: '', bought: 0, spent: 0, sold: 0, revenue: 0, cost: 0, profit: 0, left: 0, sales: 0});
+      if (venueFull && !x.venue) x.venue = venueFull;
+      return x;
+    }
+    A.orders.forEach(function (o) { var x = SH(o.eventDate, o.venueFull); x.bought += o.qty; x.spent += o.total; x.left += o.remaining; });
+    A.sales.forEach(function (s) { var x = SH(s.eventDate, s.venue); x.sold += s.qty; x.revenue += s.total; x.cost += s.total - s.profit; x.profit += s.profit; x.sales++; });
+    var showRows = Object.keys(shows).map(function (k) { var x = shows[k]; x.roi = x.cost ? x.profit / x.cost : null; return x; });
+    var held = A.orders.filter(function (o) { return o.remaining > 0; });
+    return '<p class="crumb"><a href="#artists">← All artists</a></p>' +
+      '<h2>' + esc(name) + ' <span class="sub">All time</span> <button class="link small" data-rename="' + esc(name) + '">rename / merge</button></h2>' +
+      '<div class="kpis">' +
+      kpi('Profit', a.profit, 'susd') + kpi('Revenue', a.revenue, 'usd') +
+      kpi('ROI', a.roi, 'spct', a.winRate === null ? '' : fmt(a.winRate, 'pct') + ' of sales profitable') +
+      kpi('Tickets sold', a.tickets, 'int', 'of ' + bought.toLocaleString() + ' bought · ' + a.sales + ' sales') +
+      kpi('Spent', spent, 'usd', A.orders.length + ' orders') +
+      kpi('Still holding', h.tickets, 'int', fmt(h.cost, 'usd') + ' in upcoming shows') +
+      '</div>' +
+      '<section class="card"><h3>Shows &amp; venues</h3>' + table('a-shows', [
+        {label: 'Show date', get: function (r) { return r.date; }, fmt: 'date'},
+        {label: 'Venue', get: function (r) { return splitVenue(r.venue).name || '—'; }, link: function (r) { return venueLink(splitVenue(r.venue).name); }},
+        {label: 'City', get: function (r) { return splitVenue(r.venue).city; }},
+        {label: 'Bought', get: function (r) { return r.bought; }, fmt: 'int', num: true},
         {label: 'Sold', get: function (r) { return r.sold; }, fmt: 'int', num: true},
-        {label: 'Revenue', get: function (r) { return r.revenue; }, fmt: 'usd', num: true},
-        {label: 'Profit', get: function (r) { return r.profit; }, fmt: 'susd', num: true, signed: true},
-        {label: 'ROI', get: function (r) { return r.roi; }, fmt: 'spct', num: true, signed: true},
-        {label: 'Unsold (upcoming)', get: function (r) { return r.open; }, fmt: 'int', num: true},
-        {label: 'Unsold cost (upcoming)', get: function (r) { return r.openCost; }, fmt: 'usd', num: true},
-        {label: 'Unsold (event passed)', get: function (r) { return r.dead; }, fmt: 'int', num: true}
-      ], rows, {sort: {label: 'Profit', dir: 'desc'}, actions: function (r) { return '<button class="link" data-rename="' + esc(r.artist) + '">Rename</button>'; }}) + '</section>';
+        {label: 'Left', get: function (r) { return r.left; }, fmt: 'int', num: true},
+        {label: 'Spent', get: function (r) { return r.spent; }, fmt: 'usd', num: true},
+        COL.revenue, COL.profit, COL.roi
+      ], showRows, {sort: {label: 'Show date', dir: 'desc'}, searchable: false}) +
+      '<p class="hint">Venue appears once a ticket for that show has sold (the PL file has no venue column).</p></section>' +
+      '<section class="card"><h3>Every sale</h3>' + table('a-sales', saleCols({noArtist: true, orders: true}), A.sales, {sort: {label: 'Sold on', dir: 'desc'}, empty: 'No sales logged yet.'}) + '</section>' +
+      '<section class="card"><h3>Tickets still in hand</h3>' + table('a-held', [
+        {label: 'Show date', get: function (r) { return r.eventDate; }, fmt: 'date'},
+        {label: 'Seats', get: function (r) { return r.seats.replace(/\s*[\r\n]+\s*/g, ' / '); }, wrap: true},
+        {label: 'Bought', get: function (r) { return r.qty; }, fmt: 'int', num: true},
+        {label: 'Sold', get: function (r) { return r.soldQty; }, fmt: 'int', num: true},
+        {label: 'Left', get: function (r) { return r.remaining; }, fmt: 'int', num: true},
+        {label: 'Cost of what\'s left', get: function (r) { return r.unsoldCost; }, fmt: 'usd', num: true},
+        {label: 'Status', get: function (r) { return r.status; }},
+        {label: 'Order #', get: function (r) { return r.order; }},
+        {label: 'Bought on', get: function (r) { return r.bought; }, fmt: 'date'}
+      ], held, {sort: {label: 'Show date', dir: 'asc'}, searchable: false, empty: 'Everything for this artist has sold.'}) + '</section>';
   }
 
-  function viewShows() {
-    var today = new Date(); today.setHours(0, 0, 0, 0);
-    var which = S.showWhich || 'all';
-    var rows = S.R.shows.filter(function (s) {
-      if (which === 'upcoming') return s.date && s.date >= today;
-      if (which === 'past') return s.date && s.date < today;
-      return true;
+  function viewVenues() {
+    var rows = Object.keys(S.D.venues).map(function (n) {
+      var V = S.D.venues[n];
+      var ps = V.sales.filter(function (s) { return inPeriod(s.soldAt); });
+      var a = aggSales(ps);
+      var arts = {}; ps.forEach(function (s) { arts[s.artist] = 1; });
+      a.venue = n; a.city = V.city; a.artists = Object.keys(arts).length;
+      return a;
+    }).filter(function (r) { return r.sales; });
+    return '<h2>Venues <span class="sub">' + esc(periodLabel()) + '</span></h2>' +
+      '<p class="hint">Click a venue to see every artist and sale there.</p>' +
+      '<section class="card">' + table('venues', [
+        {label: 'Venue', get: function (r) { return r.venue; }, link: function (r) { return venueLink(r.venue); }},
+        {label: 'City', get: function (r) { return r.city; }},
+        COL.profit, COL.roi, COL.sales, COL.tickets, COL.revenue,
+        {label: 'Artists', get: function (r) { return r.artists; }, fmt: 'int', num: true}
+      ], rows, {sort: {label: 'Profit', dir: 'desc'}, bigSearch: 'Search venues or cities…', empty: 'No sales in this period.'}) + '</section>';
+  }
+
+  function viewVenue(name) {
+    var V = S.D.venues[name];
+    if (!V) return '<p><a href="#venues">← Venues</a></p><h2>' + esc(name) + '</h2><p class="hint">No data for this venue.</p>';
+    var a = aggSales(V.sales);
+    var arts = groupSales(V.sales, function (s) { return s.artist; }).map(function (r) {
+      var d = {}; r.list.forEach(function (s) { d[s.eventDate ? tt_dayKey(s.eventDate) : ''] = 1; }); r.shows = Object.keys(d).length; return r;
     });
-    var tools = '<select id="showWhich">' + [['all', 'All shows'], ['upcoming', 'Upcoming'], ['past', 'Past']].map(function (o) { return '<option value="' + o[0] + '"' + (o[0] === which ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>';
-    return '<h2>Shows</h2><p class="hint">One row per artist per show date, across everything you have ever logged.</p><section class="card">' + table('shows', [
-      {label: 'Show date', get: function (r) { return r.date; }, fmt: 'date'},
-      {label: 'Artist', get: function (r) { return r.artist; }},
-      {label: 'Venue', get: function (r) { return r.venue; }, wrap: true},
-      {label: 'Bought', get: function (r) { return r.bought; }, fmt: 'int', num: true},
-      {label: 'Spent', get: function (r) { return r.spent; }, fmt: 'usd', num: true},
-      {label: 'Sold', get: function (r) { return r.sold; }, fmt: 'int', num: true},
-      {label: 'Revenue', get: function (r) { return r.revenue; }, fmt: 'usd', num: true},
-      {label: 'Profit', get: function (r) { return r.profit; }, fmt: 'susd', num: true, signed: true},
-      {label: 'ROI', get: function (r) { return r.roi; }, fmt: 'spct', num: true, signed: true},
-      {label: 'Left', get: function (r) { return r.open; }, fmt: 'int', num: true},
-      {label: 'Unsold cost', get: function (r) { return r.openCost; }, fmt: 'usd', num: true}
-    ], rows, {sort: {label: 'Show date', dir: 'asc'}, extraTools: tools}) + '</section>';
-  }
-
-  function viewInventory() {
-    var statuses = {}; S.R.orders.forEach(function (o) { statuses[o.status] = (statuses[o.status] || 0) + 1; });
-    var rows = S.R.orders.filter(function (o) { return S.invStatus === 'all' || o.status === S.invStatus; });
-    var tools = '<select id="invStatus"><option value="all">All statuses (' + S.R.orders.length + ')</option>' +
-      Object.keys(statuses).sort().map(function (k) { return '<option' + (k === S.invStatus ? ' selected' : '') + ' value="' + esc(k) + '">' + esc(k) + ' (' + statuses[k] + ')</option>'; }).join('') + '</select>';
-    return '<h2>Inventory</h2><p class="hint">Every PL order and how much of it has sold. "No sale logged" just means no Discord sale for that order has been imported.</p><section class="card">' + table('inventory', [
-      {label: 'Show date', get: function (r) { return r.eventDate; }, fmt: 'date'},
-      {label: 'Artist', get: function (r) { return r.artist; }},
-      {label: 'Seats', get: function (r) { return r.seats.replace(/\s*\n\s*/g, ' / '); }, wrap: true},
-      {label: 'Bought', get: function (r) { return r.qty; }, fmt: 'int', num: true},
-      {label: 'Sold', get: function (r) { return r.soldQty; }, fmt: 'int', num: true},
-      {label: 'Left', get: function (r) { return r.remaining; }, fmt: 'int', num: true},
-      {label: 'Status', get: function (r) { return r.status; }},
-      {label: 'Cost', get: function (r) { return r.total; }, fmt: 'usd', num: true},
-      {label: 'Revenue', get: function (r) { return r.revenue; }, fmt: 'usd', num: true},
-      {label: 'Profit', get: function (r) { return r.profit; }, fmt: 'susd', num: true, signed: true},
-      {label: 'Unsold cost', get: function (r) { return r.unsoldCost; }, fmt: 'usd', num: true},
-      {label: 'Order #', get: function (r) { return r.order; }},
-      {label: 'Bought on', get: function (r) { return r.bought; }, fmt: 'date'},
-      {label: 'Site', get: function (r) { return r.site; }}
-    ], rows, {sort: {label: 'Show date', dir: 'asc'}, extraTools: tools}) + '</section>';
+    var h = holding(V.orders);
+    return '<p class="crumb"><a href="#venues">← All venues</a></p>' +
+      '<h2>' + esc(name) + ' <span class="sub">' + esc(V.city) + ' · All time</span></h2>' +
+      '<div class="kpis">' +
+      kpi('Profit', a.profit, 'susd') + kpi('Revenue', a.revenue, 'usd') +
+      kpi('ROI', a.roi, 'spct', a.winRate === null ? '' : fmt(a.winRate, 'pct') + ' of sales profitable') +
+      kpi('Tickets sold', a.tickets, 'int', a.sales + ' sales') +
+      kpi('Artists', arts.length, 'int') +
+      kpi('Still holding', h.tickets, 'int', fmt(h.cost, 'usd') + ' upcoming here') +
+      '</div>' +
+      '<section class="card"><h3>By artist</h3>' + table('v-artists', [
+        {label: 'Artist', get: function (r) { return r.key; }, link: function (r) { return artistLink(r.key); }},
+        {label: 'Shows', get: function (r) { return r.shows; }, fmt: 'int', num: true},
+        COL.sales, COL.tickets, COL.revenue, COL.profit, COL.roi
+      ], arts, {sort: {label: 'Profit', dir: 'desc'}, searchable: false}) + '</section>' +
+      '<section class="card"><h3>Every sale here</h3>' + table('v-sales', saleCols({noVenue: true}), V.sales, {sort: {label: 'Sold on', dir: 'desc'}}) + '</section>';
   }
 
   function viewSales() {
     var rows = S.R.sales.filter(function (s) { return inPeriod(s.soldAt); });
-    return '<h2>Sales — ' + esc(periodLabel()) + '</h2><section class="card">' + table('sales', [
-      {label: 'Sold', get: function (r) { return r.soldAt; }, fmt: 'datetime'},
-      {label: 'Artist', get: function (r) { return r.artist; }},
-      {label: 'Show date', get: function (r) { return r.eventDate; }, fmt: 'date'},
-      {label: 'Venue', get: function (r) { return r.venue; }, wrap: true},
-      {label: 'Section', get: function (r) { return r.section; }},
-      {label: 'Row', get: function (r) { return r.row; }},
-      {label: 'Qty', get: function (r) { return r.qty; }, fmt: 'int', num: true},
-      {label: 'Cost / tkt', get: function (r) { return r.costPer; }, fmt: 'usd', num: true},
-      {label: 'Sold / tkt', get: function (r) { return r.soldPer; }, fmt: 'usd', num: true},
-      {label: 'Total sale', get: function (r) { return r.total; }, fmt: 'usd', num: true},
-      {label: 'Profit', get: function (r) { return r.profit; }, fmt: 'susd', num: true, signed: true},
-      {label: 'ROI', get: function (r) { return r.roi; }, fmt: 'spct', num: true, signed: true},
-      {label: 'Marketplace', get: function (r) { return r.marketplace; }},
-      {label: 'Time to sell', get: function (r) { return r.timeToSell; }},
-      {label: 'Order #s', get: function (r) { return (r.orders || []).join(', '); }},
-      {label: 'In PL orders?', get: function (r) { return r.matched ? 'Yes' : 'No'; }}
-    ], rows, {sort: {label: 'Sold', dir: 'desc'}, actions: function (r) { return '<button class="link danger" data-delsale="' + esc(r.key) + '" title="Remove this sale">Remove</button>'; }}) + '</section>';
+    return '<h2>Sales <span class="sub">' + esc(periodLabel()) + '</span></h2>' +
+      '<section class="card">' + table('sales', saleCols({orders: true}).concat([{label: 'In PL orders?', get: function (r) { return r.matched ? 'Yes' : 'No'; }}]), rows,
+        {sort: {label: 'Sold on', dir: 'desc'}, bigSearch: 'Search sales (artist, venue, section, order #)…',
+          actions: function (r) { return '<button class="link danger" data-delsale="' + esc(r.key) + '" title="Remove this sale">Remove</button>'; }}) + '</section>';
   }
 
   function viewImport() {
-    var po = S.pendingOrders, ps = S.pendingSales;
-    var oSum = '', sSum = '';
-    if (po) oSum = '<div class="pill ok">' + po.fresh.length + ' new orders</div><div class="pill">' + po.changed.length + ' updated</div><div class="pill muted">' + po.same + ' already saved</div>' +
-      (po.skipped ? '<div class="pill muted">' + po.skipped + ' rows without an order number skipped</div>' : '');
-    if (ps) {
-      var known = {}; S.raw.orders.forEach(function (r) { known[r.order_number] = 1; });
-      if (po) po.fresh.forEach(function (r) { known[r.order_number] = 1; });
-      var unmatched = ps.fresh.filter(function (s) { return !s.orders.some(function (o) { return known[o]; }); });
-      var profit = ps.fresh.reduce(function (t, s) { return t + s.profit; }, 0);
-      sSum = '<div class="pill ok">' + ps.fresh.length + ' new sales</div><div class="pill muted">' + ps.dupes + ' already saved</div>' +
-        (ps.fresh.length ? '<div class="pill ' + signClass(profit) + '">New profit ' + esc(fmt(profit, 'susd')) + '</div>' : '') +
-        (unmatched.length ? '<div class="pill warn">' + unmatched.length + ' not found in PL orders: ' + esc(unmatched.slice(0, 4).map(function (s) { return s.event + ' (' + (s.orders.join(', ') || 'no order #') + ')'; }).join('; ')) + (unmatched.length > 4 ? '…' : '') + '</div>' : '');
-    }
-    var ready = (po && (po.fresh.length || po.changed.length)) || (ps && ps.fresh.length);
-    return '<h2>Import</h2><p class="hint">Add your newest PL orders CSV and/or Discord sales. Only new or changed data is saved — re-importing the same thing is always safe. Nothing is ever deleted.</p>' +
+    var log = (S.importLog || []).slice(-8).reverse().map(function (l) {
+      return '<li><b>' + esc(l.when) + '</b> — ' + esc(l.text) + '</li>';
+    }).join('');
+    return '<h2>Import</h2><p class="hint">Add either one, any time — they are saved as soon as you drop or paste them. Only new or changed data is added; repeats are skipped. The extension fills the sales box for you.</p>' +
       '<div class="two">' +
-      '<section class="card"><h3>1 · PL orders CSV</h3><p class="hint">In the PL Orders sheet: File → Download → Comma-separated values (.csv).</p>' +
-      '<label class="drop" id="csvDrop"><input type="file" id="csvFile" accept=".csv,text/csv"><span>' + (po ? esc(po.name) : 'Drop the CSV here or click to choose') + '</span></label>' + oSum + '</section>' +
-      '<section class="card"><h3>2 · Discord sales</h3><p class="hint">Use the Sales Grabber (Help tab) → Copy all, then paste here. Copying straight from Discord works too.</p>' +
-      '<textarea id="discordText" placeholder="Paste here (Ctrl+V)">' + esc(S.pendingText || '') + '</textarea>' + sSum + '</section>' +
+      '<section class="card"><h3>PL orders CSV</h3><p class="hint">PL Orders sheet → File → Download → Comma-separated values (.csv). Drop it here.</p>' +
+      '<label class="drop" id="csvDrop"><input type="file" id="csvFile" accept=".csv,text/csv"><span>Drop the CSV here or click to choose</span></label></section>' +
+      '<section class="card"><h3>Discord sales</h3><p class="hint">Paste sale messages here (Ctrl+V) — or use the extension\'s "Export new sales".</p>' +
+      '<textarea id="discordText" placeholder="Paste here (Ctrl+V)"></textarea></section>' +
       '</div>' +
-      '<div class="savebar"><button id="saveBtn" class="primary"' + (ready ? '' : ' disabled') + '>' + (S.store.demo ? 'Add (demo – not saved)' : 'Add to my database') + '</button>' +
-      '<button id="clearBtn" class="ghost">Clear</button></div>';
+      '<section class="card"><h3>Recent imports</h3>' + (log ? '<ul class="log">' + log + '</ul>' : '<p class="hint">Nothing imported in this session yet.</p>') + '</section>';
   }
 
-  function viewHelp() {
-    return '<h2>Help</h2>' +
-      '<section class="card"><h3>Sales Grabber (Discord exporter)</h3>' +
-      '<p><b>Set it up once:</b> show your bookmarks bar (Ctrl+Shift+B), then drag this button onto it:</p>' +
-      '<p><a class="bm" id="bmLink" href="#">📋 Sales Grabber</a></p>' +
-      '<p class="hint">Can\'t drag it? Right-click your bookmarks bar → Add page → name it "Sales Grabber" and paste this as the URL: <button class="link" id="copyBm">copy bookmark code</button></p>' +
-      '<p><b>Each time:</b></p><ol><li>Open Discord in Chrome at <b>discord.com</b> (not the desktop app) and go to your sales channel.</li>' +
-      '<li>Click the <b>Sales Grabber</b> bookmark. A small panel appears bottom-right.</li>' +
-      '<li>Scroll up until you pass the last sale you imported — or press <b>Auto-scroll up</b> to collect everything.</li>' +
-      '<li>Press <b>Copy all</b>, come back here → <b>Import</b> tab → paste into the Discord box → <b>Add to my database</b>.</li></ol>' +
-      '<p class="hint">It only reads what is on your screen. It does not use your login token or Discord\'s API.</p></section>' +
-      '<section class="card"><h3>How the numbers work</h3><ul>' +
-      '<li><b>Profit / revenue / ROI</b> come straight from each Discord sale and count in the month the sale happened.</li>' +
-      '<li><b>Spent on new orders</b> counts in the month you bought the tickets (from the PL CSV).</li>' +
-      '<li>Sales are linked to orders by the order number in Discord\'s Internal Notes.</li>' +
-      '<li>Duplicate sales are detected by sold time + event + section + row + qty + total.</li></ul></section>';
+  function viewExtension() {
+    return '<h2>Sales Grabber extension</h2>' +
+      '<section class="card"><h3>Install (one time)</h3>' +
+      '<p><a class="bm" href="sales-grabber-extension.zip" download>⬇ Download the extension</a></p><ol>' +
+      '<li>Right-click the downloaded zip → <b>Extract All</b>. Keep the folder somewhere permanent (e.g. Documents).</li>' +
+      '<li>Open <b>chrome://extensions</b>, turn on <b>Developer mode</b> (top right).</li>' +
+      '<li>Click <b>Load unpacked</b> → choose the <b>sales-grabber-extension</b> folder.</li>' +
+      '<li>Puzzle-piece icon → pin <b>Sales Grabber</b>. Updating later: replace the folder, then press ↻ on the extension.</li></ol></section>' +
+      '<section class="card"><h3>Use it</h3><ol>' +
+      '<li>Open your sales channel at <b>discord.com</b> and click the blue <b>$</b> button.</li>' +
+      '<li>Click <b>Export new sales</b>. It stops by itself when it reaches sales already saved here (first time: the whole channel).</li>' +
+      '<li>When it finishes, the sales are saved here automatically.</li></ol>' +
+      '<p class="hint">Everything it collects is kept in the extension, so you can <b>Pause</b>, close the tab, and <b>Resume</b> later, or <b>Copy</b>/<b>Send</b> again any time.</p></section>';
   }
 
-  // ---------- import handling ----------
-  function prepareOrders(name, rows) {
-    var seen = {}, list = [], skipped = 0;
+  // ---------- import handling (auto-save) ----------
+  function logImport(text) {
+    S.importLog = S.importLog || [];
+    S.importLog.push({when: new Date().toLocaleTimeString('en-US', {hour: 'numeric', minute: '2-digit'}), text: text});
+  }
+  async function importOrders(name, rows) {
+    var seen = {}, skipped = 0;
     rows.forEach(function (obj) { var r = csvRowToOrder(obj); if (!r) { skipped++; return; } seen[r.order_number] = r; });
-    Object.keys(seen).forEach(function (k) { list.push(seen[k]); });
     var fresh = [], changed = [], same = 0;
-    list.forEach(function (r) {
-      var cur = S.orderIndex[r.order_number];
+    Object.keys(seen).forEach(function (k) {
+      var r = seen[k], cur = S.orderIndex[r.order_number];
       if (!cur) fresh.push(r); else if (orderSig(cur) !== orderSig(r)) changed.push(r); else same++;
     });
-    S.pendingOrders = {name: name, fresh: fresh, changed: changed, same: same, skipped: skipped};
+    var rowsToSave = fresh.concat(changed);
+    if (rowsToSave.length) await S.store.upsertOrders(rowsToSave);
+    var msg = name + ': ' + fresh.length + ' new orders, ' + changed.length + ' updated, ' + same + ' already saved' + (skipped ? ', ' + skipped + ' blank rows skipped' : '') + '.';
+    logImport(msg);
+    if (rowsToSave.length) await reload(); else render();
+    toast(msg);
+    return {added: fresh.length, updated: changed.length, same: same};
   }
-  function prepareSales(text) {
-    S.pendingText = text;
-    if (!text.trim()) { S.pendingSales = null; return; }
-    var parsed = tt_parseDiscord(text), seen = {}, fresh = [], dupes = 0;
+  async function importSales(text) {
+    var parsed = tt_parseDiscord(text || ''), seen = {}, fresh = [], dupes = 0;
     parsed.forEach(function (s) { if (S.saleIndex[s.key] || seen[s.key]) { dupes++; return; } seen[s.key] = 1; fresh.push(s); });
-    S.pendingSales = {fresh: fresh, dupes: dupes, total: parsed.length};
-    if (!parsed.length) toast('No sales found in that text. Make sure it includes the full sale messages.', true);
-  }
-  async function saveImport() {
-    var btn = $('#saveBtn'); btn.disabled = true; btn.textContent = 'Saving…';
-    try {
-      var nO = 0, nS = 0;
-      if (S.pendingOrders) { var rows = S.pendingOrders.fresh.concat(S.pendingOrders.changed); nO = rows.length; if (rows.length) await S.store.upsertOrders(rows); }
-      if (S.pendingSales && S.pendingSales.fresh.length) { nS = S.pendingSales.fresh.length; await S.store.insertSales(S.pendingSales.fresh.map(saleToDb)); }
-      S.pendingOrders = S.pendingSales = null; S.pendingText = '';
-      await reload();
-      toast('Saved ' + nO + ' orders and ' + nS + ' sales.');
-    } catch (e) {
-      toast('Save failed: ' + (e.message || e), true);
-      btn.disabled = false; btn.textContent = 'Add to my database';
-    }
+    if (!parsed.length) { toast('No sales found in that text. Make sure it includes the full sale messages.', true); return {parsed: 0, added: 0, dupes: 0}; }
+    if (fresh.length) await S.store.insertSales(fresh.map(saleToDb));
+    var profit = fresh.reduce(function (t, s) { return t + s.profit; }, 0);
+    var unmatched = fresh.filter(function (s) { return !s.orders.some(function (o) { return S.orderIndex[o]; }); }).length;
+    var msg = 'Discord: ' + fresh.length + ' new sales' + (fresh.length ? ' (' + fmt(profit, 'susd') + ')' : '') + ', ' + dupes + ' already saved' +
+      (unmatched ? ', ' + unmatched + ' not found in PL orders yet (add the newest CSV)' : '') + '.';
+    logImport(msg);
+    if (fresh.length) await reload(); else render();
+    toast(msg);
+    return {parsed: parsed.length, added: fresh.length, dupes: dupes, unmatched: unmatched};
   }
   function readCsvFile(file) {
     Papa.parse(file, {header: true, skipEmptyLines: true, complete: function (res) {
-      var headers = (res.meta.fields || []).map(function (h) { return String(h).trim().toLowerCase(); });
-      if (headers.indexOf('order number') < 0) { toast('That CSV has no "Order Number" column — is it the PL orders export?', true); return; }
-      prepareOrders(file.name, res.data); render();
+      var keys = (res.meta.fields || []).map(headerKey);
+      if (keys.indexOf('order_number') < 0) { toast('That CSV has no "Order Number" column — is it the PL orders export?', true); return; }
+      importOrders(file.name, res.data).catch(function (e) { toast('Save failed: ' + (e.message || e), true); });
     }, error: function (e) { toast('Could not read CSV: ' + e.message, true); }});
   }
 
-  // ---------- render ----------
-  var VIEWS = {overview: viewOverview, artists: viewArtists, shows: viewShows, inventory: viewInventory, sales: viewSales, import: viewImport, help: viewHelp};
+  // ---------- routing + render ----------
+  function route() {
+    var h = decodeURIComponent(location.hash.replace(/^#/, ''));
+    var m = h.match(/^(artist|venue)\/(.+)$/);
+    if (m) { S.tab = m[1] + 's'; S.detail = {type: m[1], name: m[2]}; }
+    else { S.detail = null; S.tab = ['overview', 'artists', 'venues', 'sales', 'import', 'extension'].indexOf(h) >= 0 ? h : (S.tab || 'overview'); }
+    render();
+    window.scrollTo(0, 0);
+  }
   function render() {
     if (!S.R) return;
+    if (!S.D) derive();
     document.querySelectorAll('nav [data-tab]').forEach(function (b) { b.classList.toggle('on', b.dataset.tab === S.tab); });
-    var usesPeriod = ['overview', 'artists', 'sales'].indexOf(S.tab) >= 0;
+    var usesPeriod = !S.detail && ['overview', 'artists', 'venues', 'sales'].indexOf(S.tab) >= 0;
     $('#period').hidden = !usesPeriod;
     if (usesPeriod) renderPeriodControls();
     var main = $('#view');
-    main.innerHTML = VIEWS[S.tab]();
+    var html;
+    if (S.detail) html = S.detail.type === 'artist' ? viewArtist(S.detail.name) : viewVenue(S.detail.name);
+    else html = ({overview: viewOverview, artists: viewArtists, venues: viewVenues, sales: viewSales, import: viewImport, extension: viewExtension}[S.tab] || viewOverview)();
+    main.innerHTML = html;
     wireTables(main); wireChart(main);
     main.querySelectorAll('[data-rename]').forEach(function (b) {
       b.onclick = async function () {
-        var old = b.dataset.rename, nn = window.prompt('Rename "' + old + '" to (type an existing artist name to merge):', old);
+        var old = b.dataset.rename, nn = window.prompt('Rename "' + old + '" to (type an existing artist name to merge them):', old);
         if (!nn || !nn.trim() || nn.trim() === old) return;
         var rows = S.R.artistMap.filter(function (m) { return m.artist === old; }).map(function (m) { return {raw_name: m.raw, artist: nn.trim()}; });
         if (!rows.length) rows = [{raw_name: tt_norm(old), artist: nn.trim()}];
-        try { await S.store.setOverrides(rows); await reload(); toast('Renamed to ' + nn.trim()); } catch (e) { toast('Rename failed: ' + (e.message || e), true); }
+        try { await S.store.setOverrides(rows); await reload(); location.hash = artistLink(nn.trim()); toast('Renamed to ' + nn.trim()); } catch (e) { toast('Rename failed: ' + (e.message || e), true); }
       };
     });
     main.querySelectorAll('[data-delsale]').forEach(function (b) {
       b.onclick = async function () {
-        if (!window.confirm('Remove this sale from your tracker? (Only your tracker — Discord is not affected. If you paste this sale again later it will be added back.)')) return;
+        if (!window.confirm('Remove this sale from your tracker? (Discord is not affected. If it is imported again later it will come back.)')) return;
         try { await S.store.deleteSale(b.dataset.delsale); await reload(); toast('Sale removed.'); } catch (e) { toast('Remove failed: ' + (e.message || e), true); }
       };
     });
-    if (S.tab === 'shows') $('#showWhich').onchange = function (e) { S.showWhich = e.target.value; render(); };
-    if (S.tab === 'inventory') $('#invStatus').onchange = function (e) { S.invStatus = e.target.value; render(); };
-    if (S.tab === 'import') {
-      $('#csvFile').onchange = function (e) { if (e.target.files[0]) readCsvFile(e.target.files[0]); };
+    var all = $('#artistsAll'); if (all) all.onchange = function () { S.artistsAll = all.checked; render(); };
+    if (S.tab === 'import' && !S.detail) {
+      $('#csvFile').onchange = function (e) { if (e.target.files[0]) readCsvFile(e.target.files[0]); e.target.value = ''; };
       var drop = $('#csvDrop');
       drop.ondragover = function (e) { e.preventDefault(); drop.classList.add('over'); };
       drop.ondragleave = function () { drop.classList.remove('over'); };
       drop.ondrop = function (e) { e.preventDefault(); drop.classList.remove('over'); if (e.dataTransfer.files[0]) readCsvFile(e.dataTransfer.files[0]); };
       var ta = $('#discordText'), t;
-      ta.oninput = function () { clearTimeout(t); t = setTimeout(function () { prepareSales(ta.value); render(); var n = $('#discordText'); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }, 400); };
-      $('#saveBtn').onclick = saveImport;
-      $('#clearBtn').onclick = function () { S.pendingOrders = S.pendingSales = null; S.pendingText = ''; render(); };
-    }
-    if (S.tab === 'help') {
-      var bm = window.SALES_GRABBER || '';
-      $('#bmLink').setAttribute('href', bm);
-      $('#bmLink').onclick = function (e) { e.preventDefault(); toast('Drag this button to your bookmarks bar, then click it while on Discord.'); };
-      $('#copyBm').onclick = function () { navigator.clipboard.writeText(bm).then(function () { toast('Bookmark code copied.'); }); };
+      ta.oninput = function () {
+        clearTimeout(t);
+        t = setTimeout(function () {
+          var v = ta.value; if (!v.trim()) return;
+          importSales(v).catch(function (e) { toast('Save failed: ' + (e.message || e), true); });
+        }, 700);
+      };
     }
     var n = S.R.sales.length, o = S.R.orders.length;
     $('#status').textContent = (S.store.demo ? 'Demo mode — nothing is saved · ' : '') + o.toLocaleString() + ' orders · ' + n.toLocaleString() + ' sales';
@@ -626,9 +730,11 @@
     S.store = store;
     showScreen('#app');
     if (store.demo) { $('#signOut').textContent = 'Exit demo'; $('#signOut').onclick = function () { location.href = location.pathname; }; }
-    document.querySelectorAll('nav [data-tab]').forEach(function (b) { b.onclick = function () { S.tab = b.dataset.tab; render(); }; });
+    document.querySelectorAll('nav [data-tab]').forEach(function (b) { b.onclick = function () { location.hash = b.dataset.tab; }; });
+    window.addEventListener('hashchange', route);
     await reload();
-    if (!S.raw.orders.length && !S.raw.sales.length) { S.tab = 'import'; render(); }
+    if (!location.hash && !S.raw.orders.length && !S.raw.sales.length) location.hash = 'import';
+    else route();
   }
 
   async function boot() {
@@ -673,6 +779,9 @@
     };
   }
 
-  window.TT_APP = {S: S, MemoryStore: MemoryStore, SupabaseStore: SupabaseStore, csvRowToOrder: csvRowToOrder, saleToDb: saleToDb, saleFromDb: saleFromDb};
+  window.TT_APP = {S: S, MemoryStore: MemoryStore, SupabaseStore: SupabaseStore, csvRowToOrder: csvRowToOrder, saleToDb: saleToDb, saleFromDb: saleFromDb,
+    ready: function () { return !!(S.R && S.store); },
+    importSales: function (text) { return importSales(text); },   // used by the Sales Grabber extension
+    latestSaleMs: function () { var m = 0; (S.R ? S.R.sales : []).forEach(function (s) { if (s.soldAt && +s.soldAt > m) m = +s.soldAt; }); return m || null; }};
   document.addEventListener('DOMContentLoaded', boot);
 })();
