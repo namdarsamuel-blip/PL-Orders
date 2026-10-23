@@ -636,9 +636,15 @@
     var c = cfg();
     if (!c.url || !c.key) {
       showScreen('#setup');
-      $('#setupForm').onsubmit = function (e) {
+      $('#setupForm').onsubmit = async function (e) {
         e.preventDefault();
-        lsSet('tt_url', $('#sbUrl').value.trim().replace(/\/+$/, '')); lsSet('tt_key', $('#sbKey').value.trim());
+        var url = $('#sbUrl').value.trim().replace(/\/+$/, '').replace(/\/(rest|auth)\/v1.*$/, ''), key = $('#sbKey').value.trim();
+        if (!/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(url)) { toast('Project URL should look like https://abcdefgh.supabase.co (copy it from Supabase → Settings → Data API).', true); return; }
+        var ok = false, status = 0;
+        try { var res = await fetch(url + '/auth/v1/settings', {headers: {apikey: key}}); status = res.status; ok = res.ok; } catch (err) { status = -1; }
+        if (status === -1) { toast('Could not reach ' + url + ' — the Project URL is probably mistyped (or Supabase is down). Copy it again from Supabase → Settings → Data API.', true); return; }
+        if (!ok) { toast('Supabase rejected that key (error ' + status + '). Use the "anon public" key from the Legacy API keys tab.', true); return; }
+        lsSet('tt_url', url); lsSet('tt_key', key);
         boot();
       };
       return;
@@ -655,7 +661,13 @@
       var b = $('#loginBtn'); b.disabled = true;
       var r = await client.auth.signInWithPassword({email: $('#email').value.trim(), password: $('#password').value});
       b.disabled = false;
-      if (r.error) { toast(r.error.message, true); return; }
+      if (r.error) {
+        var msg = r.error.message || String(r.error);
+        if (/fetch/i.test(msg)) msg = 'Could not reach your Supabase project (' + c.url + '). Click "Change Supabase connection" and re-enter the Project URL.';
+        else if (/invalid login/i.test(msg)) msg = 'Wrong email or password.';
+        else if (/not confirmed/i.test(msg)) msg = 'This user is not confirmed yet — confirm it in Supabase → Authentication → Users.';
+        toast(msg, true); return;
+      }
       startApp(new SupabaseStore(client));
     };
   }
