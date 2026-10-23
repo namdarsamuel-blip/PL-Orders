@@ -147,7 +147,7 @@ function tt_saleKey(s) {
 
 /** Best-guess artist name from a raw event title. */
 function tt_baseArtist(raw) {
-  var s = String(raw || '').trim();
+  var s = String(raw || '').replace(/\uFFFD|[\u2018\u2019]/g, "'").trim();
   try { s = s.normalize('NFD').replace(/[̀-ͯ]/g, ''); } catch (e) {}
   s = s.replace(/^.*?\bPresents?:?\s+/i, function (x) { return /^disney/i.test(x) ? '' : x; });
   s = s.split(/\s*[-–—]\s+|:|\s+"|\s+w\/\s+|\s+\(|\s+\[/)[0];
