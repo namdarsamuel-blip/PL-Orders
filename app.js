@@ -169,7 +169,7 @@
   };
   MemoryStore.prototype.upsertOrders = async function (rows) { var self = this; rows.forEach(function (r) { self.o[r.order_number] = Object.assign({}, self.o[r.order_number] || {}, r); }); };
   MemoryStore.prototype.insertSales = async function (rows) { var self = this; rows.forEach(function (r) { if (!self.s[r.sale_key]) self.s[r.sale_key] = r; }); };
-  MemoryStore.prototype.replaceSales = async function (rows, oldKeys) { var self = this; rows.forEach(function (r) { self.s[r.sale_key] = r; }); oldKeys.forEach(function (k) { delete self.s[k]; }); };
+  MemoryStore.prototype.replaceSales = async function (rows, oldKeys) { var self = this; rows.forEach(function (r) { self.s[r.sale_key] = Object.assign({}, self.s[r.sale_key] || {}, r); }); oldKeys.forEach(function (k) { delete self.s[k]; }); };
   MemoryStore.prototype.setOverrides = async function (rows) { var self = this; rows.forEach(function (r) { self.m[r.raw_name] = r.artist; }); };
   MemoryStore.prototype.deleteSale = async function (key) { delete this.s[key]; };
 
@@ -193,11 +193,37 @@
     }
   }
 
-  async function reload() {
+  // Sales saved by the earlier version have a timestamp as the artist and the result label as the venue.
+  // Every sale still has its order number, so take the artist + show date from the matching PL order.
+  var TIER_RE = /^(MASSIVE SALE|FANTASTIC SALE|PROFITABLE|EHH SALE|BREAK EVEN|LOSS)$/i;
+  function isScrambled(r) { return tt_notAName(r.event) || TIER_RE.test(String(r.venue || '').trim()); }
+  function repairsFromOrders() {
+    var byOrder = {};
+    S.R.orders.forEach(function (o) { byOrder[o.order] = o; });
+    var out = [];
+    S.raw.sales.forEach(function (r) {
+      if (!isScrambled(r)) return;
+      var fix = {sale_key: r.sale_key};
+      var o = (r.order_numbers || []).map(function (n) { return byOrder[n]; }).filter(Boolean)[0];
+      if (tt_notAName(r.event) && o && o.event) { fix.event = o.event; fix.event_date = o.eventDate ? tt_dayKey(o.eventDate) : r.event_date; }
+      if (TIER_RE.test(String(r.venue || '').trim())) { fix.result = String(r.venue).trim(); fix.venue = null; }
+      if (Object.keys(fix).length > 1) out.push(fix);
+    });
+    return out;
+  }
+  async function reload(noRepair) {
     $('#loading').hidden = false;
     try {
       S.raw = await S.store.loadAll();
       rebuild();
+      var fixes = noRepair ? [] : repairsFromOrders();
+      if (fixes.length) {
+        await S.store.replaceSales(fixes, []);
+        S.raw = await S.store.loadAll();
+        rebuild();
+        var left = S.raw.sales.filter(isScrambled).length;
+        toast('Fixed ' + fixes.length.toLocaleString() + ' sales using your PL orders' + (left ? ' (' + left + ' could not be matched to a PL order)' : '') + '.');
+      }
       render();
     } catch (e) {
       toast('Could not load your data: ' + (e.message || e), true);
@@ -453,8 +479,10 @@
       {label: 'Seats', get: function (s) { return 'Sec ' + s.section + ' · Row ' + s.row + ' · ×' + s.qty; }},
       COL.profit
     ];
-    var bad = S.R.sales.filter(function (s) { return tt_notAName(s.event) || /^(MASSIVE SALE|FANTASTIC SALE|PROFITABLE|EHH SALE|BREAK EVEN|LOSS)$/i.test(splitVenue(s.venue).name); }).length;
-    var warn = bad ? '<div class="banner">⚠ ' + bad.toLocaleString() + ' saved sales have scrambled artist/venue names (from the earlier version). To fix them: in the extension click <b>Export entire channel</b> (or <b>Send saved sales to tracker</b> if it still has them). They will be repaired in place — not duplicated. Profit numbers are already correct.</div>' : '';
+    var bad = S.R.sales.filter(function (s) { return tt_notAName(s.event); }).length;
+    var noVenue = S.R.sales.filter(function (s) { return !s.venue; }).length;
+    var warn = bad ? '<div class="banner">⚠ ' + bad.toLocaleString() + ' sales have no artist name because their order number is not in your PL orders. Import the newest PL CSV, or re-send them from the extension (<b>Export entire channel</b>) and they will be repaired — not duplicated.</div>' :
+      noVenue > 20 ? '<div class="banner">ℹ ' + noVenue.toLocaleString() + ' older sales are missing their venue (the earlier version didn\'t read it). Artist names and profit are correct. To fill in venues: in the extension click <b>Export entire channel</b> — they are updated in place, not duplicated.</div>' : '';
     return warn + '<h2>' + esc(periodLabel()) + '</h2>' +
       '<div class="kpis">' +
       kpi('Profit', a.profit, 'susd') + kpi('Revenue', a.revenue, 'usd') +
