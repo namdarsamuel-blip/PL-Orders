@@ -134,6 +134,22 @@
       if (r.error) throw r.error;
     }
   };
+  SupabaseStore.prototype.replaceSales = async function (rows, oldKeys) {   // repair: write corrected rows, then drop the old copies
+    var uid = await this.userId(), self = this;
+    for (var part of chunk(rows, 500)) {
+      var r = await self.sb.from('sales').upsert(part.map(function (x) { return Object.assign({}, x, {user_id: uid}); }), {onConflict: 'user_id,sale_key'});
+      if (r.error) throw r.error;
+    }
+    var plain = oldKeys.filter(function (k) { return k.indexOf('"') < 0; }), quoted = oldKeys.filter(function (k) { return k.indexOf('"') >= 0; });
+    for (var ks of chunk(plain, 40)) {
+      var d = await self.sb.from('sales').delete().in('sale_key', ks);
+      if (d.error) throw d.error;
+    }
+    for (var q of quoted) {
+      var d2 = await self.sb.from('sales').delete().eq('sale_key', q);
+      if (d2.error) throw d2.error;
+    }
+  };
   SupabaseStore.prototype.setOverrides = async function (rows) {
     var uid = await this.userId();
     var r = await this.sb.from('artist_overrides').upsert(rows.map(function (x) { return {user_id: uid, raw_name: x.raw_name, artist: x.artist}; }), {onConflict: 'user_id,raw_name'});
@@ -153,6 +169,7 @@
   };
   MemoryStore.prototype.upsertOrders = async function (rows) { var self = this; rows.forEach(function (r) { self.o[r.order_number] = Object.assign({}, self.o[r.order_number] || {}, r); }); };
   MemoryStore.prototype.insertSales = async function (rows) { var self = this; rows.forEach(function (r) { if (!self.s[r.sale_key]) self.s[r.sale_key] = r; }); };
+  MemoryStore.prototype.replaceSales = async function (rows, oldKeys) { var self = this; rows.forEach(function (r) { self.s[r.sale_key] = r; }); oldKeys.forEach(function (k) { delete self.s[k]; }); };
   MemoryStore.prototype.setOverrides = async function (rows) { var self = this; rows.forEach(function (r) { self.m[r.raw_name] = r.artist; }); };
   MemoryStore.prototype.deleteSale = async function (key) { delete this.s[key]; };
 
@@ -436,7 +453,9 @@
       {label: 'Seats', get: function (s) { return 'Sec ' + s.section + ' · Row ' + s.row + ' · ×' + s.qty; }},
       COL.profit
     ];
-    return '<h2>' + esc(periodLabel()) + '</h2>' +
+    var bad = S.R.sales.filter(function (s) { return tt_notAName(s.event) || /^(MASSIVE SALE|FANTASTIC SALE|PROFITABLE|EHH SALE|BREAK EVEN|LOSS)$/i.test(splitVenue(s.venue).name); }).length;
+    var warn = bad ? '<div class="banner">⚠ ' + bad.toLocaleString() + ' saved sales have scrambled artist/venue names (from the earlier version). To fix them: in the extension click <b>Export entire channel</b> (or <b>Send saved sales to tracker</b> if it still has them). They will be repaired in place — not duplicated. Profit numbers are already correct.</div>' : '';
+    return warn + '<h2>' + esc(periodLabel()) + '</h2>' +
       '<div class="kpis">' +
       kpi('Profit', a.profit, 'susd') + kpi('Revenue', a.revenue, 'usd') +
       kpi('ROI', a.roi, 'spct', a.winRate === null ? '' : fmt(a.winRate, 'pct') + ' of sales profitable') +
@@ -640,18 +659,33 @@
     return {added: fresh.length, updated: changed.length, same: same};
   }
   async function importSales(text) {
-    var parsed = tt_parseDiscord(text || ''), seen = {}, fresh = [], dupes = 0;
-    parsed.forEach(function (s) { if (S.saleIndex[s.key] || seen[s.key]) { dupes++; return; } seen[s.key] = 1; fresh.push(s); });
+    var parsed = tt_parseDiscord(text || ''), seen = {}, fresh = [], fixes = [], dupes = 0;
     if (!parsed.length) { toast('No sales found in that text. Make sure it includes the full sale messages.', true); return {parsed: 0, added: 0, dupes: 0}; }
+    // Match against what is saved using the stable key (time, seats, qty, total, site, order #) —
+    // so a sale saved earlier with a scrambled artist/venue gets repaired instead of duplicated.
+    var saved = {};
+    S.raw.sales.forEach(function (r) { saved[tt_saleKey(saleFromDb(r))] = r; });
+    parsed.forEach(function (s) {
+      if (seen[s.key]) { dupes++; return; }
+      seen[s.key] = 1;
+      var cur = saved[s.key];
+      if (!cur) fresh.push(s);
+      else if (cur.sale_key !== s.key || (cur.event || '') !== s.event || (cur.venue || '') !== (s.venue || '') ||
+        String(cur.event_date || '') !== String(ymd(s.eventDate) || '') || (cur.result || '') !== (s.result || '')) fixes.push({old: cur.sale_key, s: s});
+      else dupes++;
+    });
     if (fresh.length) await S.store.insertSales(fresh.map(saleToDb));
+    if (fixes.length) await S.store.replaceSales(fixes.map(function (f) { return saleToDb(f.s); }),
+      fixes.filter(function (f) { return f.old !== f.s.key; }).map(function (f) { return f.old; }));
     var profit = fresh.reduce(function (t, s) { return t + s.profit; }, 0);
     var unmatched = fresh.filter(function (s) { return !s.orders.some(function (o) { return S.orderIndex[o]; }); }).length;
-    var msg = 'Discord: ' + fresh.length + ' new sales' + (fresh.length ? ' (' + fmt(profit, 'susd') + ')' : '') + ', ' + dupes + ' already saved' +
+    var msg = 'Discord: ' + fresh.length + ' new sales' + (fresh.length ? ' (' + fmt(profit, 'susd') + ')' : '') +
+      (fixes.length ? ', ' + fixes.length + ' repaired' : '') + ', ' + dupes + ' already saved' +
       (unmatched ? ', ' + unmatched + ' not found in PL orders yet (add the newest CSV)' : '') + '.';
     logImport(msg);
-    if (fresh.length) await reload(); else render();
+    if (fresh.length || fixes.length) await reload(); else render();
     toast(msg);
-    return {parsed: parsed.length, added: fresh.length, dupes: dupes, unmatched: unmatched};
+    return {parsed: parsed.length, added: fresh.length, fixed: fixes.length, dupes: dupes, unmatched: unmatched};
   }
   function readCsvFile(file) {
     Papa.parse(file, {header: true, skipEmptyLines: true, complete: function (res) {
@@ -780,7 +814,7 @@
   }
 
   window.TT_APP = {S: S, MemoryStore: MemoryStore, SupabaseStore: SupabaseStore, csvRowToOrder: csvRowToOrder, saleToDb: saleToDb, saleFromDb: saleFromDb,
-    ready: function () { return !!(S.R && S.store); },
+    ready: function () { return !!(S.R && S.store); }, reload: function () { return reload(); },
     importSales: function (text) { return importSales(text); },   // used by the Sales Grabber extension
     latestSaleMs: function () { var m = 0; (S.R ? S.R.sales : []).forEach(function (s) { if (s.soldAt && +s.soldAt > m) m = +s.soldAt; }); return m || null; }};
   document.addEventListener('DOMContentLoaded', boot);
