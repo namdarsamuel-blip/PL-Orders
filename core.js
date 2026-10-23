@@ -61,14 +61,29 @@ function tt_parseDiscord(text) {
       }
       return '';
     }
+    // The show date is the LAST full date above "TICKETS SOLD". (Discord also puts a hidden
+    // full date for screen readers in the message header, e.g. "Friday, October 2, 2026 at 1:23 PM" —
+    // that one comes first, so taking the last one skips it.)
+    var ti = -1;
+    for (var i = 0; i < lines.length; i++) if (/TICKETS SOLD/.test(lines[i])) { ti = i; break; }
     var di = -1;
-    for (var i = 0; i < lines.length; i++) if (/^\W*(Mon|Tues|Wednes|Thurs|Fri|Satur|Sun)day,\s+[A-Za-z]+\s+\d{1,2},\s+\d{4}/.test(lines[i])) { di = i; break; }
+    for (var j = (ti > 0 ? ti : lines.length) - 1; j >= 0; j--) {
+      if (/^\W*(Mon|Tues|Wednes|Thurs|Fri|Satur|Sun)day,\s+[A-Za-z]+\s+\d{1,2},\s+\d{4}\s*$/.test(lines[j])) { di = j; break; }
+    }
+    if (di < 0) for (var k = (ti > 0 ? ti : lines.length) - 1; k >= 0; k--) {
+      if (/^\W*(Mon|Tues|Wednes|Thurs|Fri|Satur|Sun)day,\s+[A-Za-z]+\s+\d{1,2},\s+\d{4}/.test(lines[k])) { di = k; break; }
+    }
     if (di < 1) return;
-    // Event (artist) name = the line just above the date. Skip anything that is not a real name
-    // (emoji-only lines, timestamps, dates, the "PROFITABLE/LOSS" tier line, bot name).
+    // Artist = first real name above the show date (skips emoji-only lines, timestamps, "[", "]" etc.).
     var ei = di - 1;
     while (ei > 0 && tt_notAName(lines[ei])) ei--;
-    var tierLine = ei >= 1 ? lines[ei - 1] : '';
+    // Result label (PROFITABLE / LOSS / MASSIVE SALE…) = the real line above the artist.
+    var ri = ei - 1;
+    while (ri > 0 && tt_notAName(lines[ri])) ri--;
+    var tierLine = ri >= 0 ? lines[ri] : '';
+    // Venue = first real line below the show date.
+    var vi = di + 1;
+    while (vi < lines.length - 1 && !/[A-Za-z0-9]/.test(lines[vi])) vi++;
     var m = b.match(/Section (.+?) • Row (.+?) • Qty: (\d+)/);
     if (!m) return;
     var notes = '';
@@ -84,7 +99,7 @@ function tt_parseDiscord(text) {
       result: tierLine.replace(/^[^A-Za-z]+/, ''),
       event: lines[ei].replace(/^[^A-Za-z0-9]+/, '').trim(),
       eventDate: tt_parseDate(lines[di]),
-      venue: (lines[di + 1] || '').replace(/^[^A-Za-z0-9]+/, ''),
+      venue: (lines[vi] || '').replace(/^[^A-Za-z0-9]+/, ''),
       section: m[1].replace(/^SECTION\s+/i, '').trim(),
       row: m[2].trim(),
       qty: parseInt(m[3], 10),
@@ -117,14 +132,16 @@ function tt_looksLikeDate(s) {
 }
 function tt_notAName(s) {
   s = String(s || '').trim();
-  return !/[A-Za-z0-9]/.test(s) || tt_looksLikeDate(s) || /^—/.test(s) || s === 'APP';
+  return !/[A-Za-z0-9]/.test(s) || tt_looksLikeDate(s) || /^—/.test(s) || s === 'APP' || /^[\[\]()]$/.test(s) ||
+    /^\d{1,2}:\d{2}/.test(s) || /^:\d{2}\s*[AP]M\]?$/i.test(s) || /^(Sales-Notifier|Captain Hook)$/i.test(s);
 }
 
 function tt_saleKey(s) {
   var d = s.soldAt ? tt_dayKey(s.soldAt) + ' ' + s.soldAt.getHours() + ':' + s.soldAt.getMinutes() : s.soldRaw;
   // Same Discord message grabbed twice -> same key -> saved once.
   // Two different sales (different time, seats, price, marketplace or order) -> different keys -> both saved.
-  return [d, s.event, s.section, s.row, s.qty, Number(s.total).toFixed(2), String(s.marketplace || '').trim(),
+  // (The artist name is deliberately NOT part of the key, so fixing how names are read never creates duplicates.)
+  return ['v2', d, s.section, s.row, s.qty, Number(s.total).toFixed(2), String(s.marketplace || '').trim(),
     (s.orders || []).slice().sort().join(',')].join('|');
 }
 
