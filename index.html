@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ticket P&amp;L Tracker</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎟️</text></svg>">
+<style>
+:root{
+  --bg:#f4f4f2;--surface:#fcfcfb;--surface-2:#efeeeb;--line:#dddcd7;--text:#0b0b0b;--text-2:#52514e;--muted:#7a7974;
+  --accent:#2a78d6;--accent-ink:#ffffff;--pos:#0b7a0b;--neg:#c22f2f;--bar-up:#2a78d6;--bar-down:#e34948;--warn-bg:#fff4d6;--warn:#7a5300;
+  --ok-bg:#e3f2e3;--shadow:0 1px 2px rgba(0,0,0,.06),0 2px 8px rgba(0,0,0,.04);
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#121211;--surface:#1a1a19;--surface-2:#242422;--line:#33332f;--text:#f0efec;--text-2:#c3c2b7;--muted:#8f8e86;
+  --accent:#3987e5;--pos:#4cc24c;--neg:#ff7b7b;--bar-up:#3987e5;--bar-down:#e66767;--warn-bg:#3a2f12;--warn:#f5c96a;--ok-bg:#1d3320;--shadow:none;}}
+:root[data-theme="dark"]{
+  --bg:#121211;--surface:#1a1a19;--surface-2:#242422;--line:#33332f;--text:#f0efec;--text-2:#c3c2b7;--muted:#8f8e86;
+  --accent:#3987e5;--pos:#4cc24c;--neg:#ff7b7b;--bar-up:#3987e5;--bar-down:#e66767;--warn-bg:#3a2f12;--warn:#f5c96a;--ok-bg:#1d3320;--shadow:none;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+h1{font-size:18px;margin:0}h2{font-size:22px;margin:4px 0 14px}h3{font-size:15px;margin:0 0 8px}
+.hint{color:var(--text-2);margin:-6px 0 12px;font-size:13px}
+button,select,input,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+.primary{background:var(--accent);color:var(--accent-ink);border:0;border-radius:8px;padding:10px 18px;font-weight:600}
+.primary:disabled{opacity:.45;cursor:not-allowed}
+.ghost{background:transparent;border:1px solid var(--line);border-radius:8px;padding:6px 12px}
+.link{background:none;border:0;color:var(--accent);padding:0;text-decoration:underline}
+.link.danger{color:var(--neg)}
+select,input[type=search],input[type=text],input[type=email],input[type=password],textarea{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:7px 10px}
+header{position:sticky;top:0;z-index:5;background:var(--surface);border-bottom:1px solid var(--line)}
+.bar1{display:flex;align-items:center;gap:12px;padding:10px 20px;flex-wrap:wrap}
+.bar1 .spacer{flex:1}
+#status{color:var(--muted);font-size:12px}
+nav{display:flex;gap:4px;padding:0 16px;overflow-x:auto}
+nav button{background:none;border:0;border-bottom:2px solid transparent;padding:10px 12px;color:var(--text-2);white-space:nowrap}
+nav button.on{color:var(--text);border-bottom-color:var(--accent);font-weight:600}
+#period{display:flex;gap:10px;align-items:center}
+#period label{display:flex;gap:6px;align-items:center;color:var(--text-2);font-size:13px}
+main{max-width:1280px;margin:0 auto;padding:20px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px;box-shadow:var(--shadow);min-width:0}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.kpis{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;margin-bottom:16px}
+.kpi{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 14px;box-shadow:var(--shadow)}
+.kl{color:var(--text-2);font-size:12px}.kv{font-size:22px;font-weight:700;margin-top:2px;font-variant-numeric:tabular-nums}.ks{color:var(--muted);font-size:12px}
+.pos{color:var(--pos)}.neg{color:var(--neg)}
+.tabletools{display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
+.tabletools .count{color:var(--muted);font-size:12px;margin-left:auto}
+.tablewrap{overflow:auto;max-height:70vh;border:1px solid var(--line);border-radius:8px}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums;font-size:13px}
+th{position:sticky;top:0;background:var(--surface-2);text-align:left;font-weight:600;padding:8px 10px;cursor:pointer;user-select:none;white-space:nowrap;color:var(--text-2)}
+td{padding:7px 10px;border-top:1px solid var(--line);vertical-align:top}
+.num{text-align:right}td.act{white-space:nowrap}
+.empty{color:var(--muted);text-align:center;padding:24px}
+.chartbox{position:relative}
+.chart{width:100%;height:auto;display:block}
+.chart .grid{stroke:var(--line);stroke-width:1}.chart .axis{stroke:var(--muted);stroke-width:1}
+.chart .tick{fill:var(--text-2);font-size:11px}
+.chart .bar.up{fill:var(--bar-up)}.chart .bar.down{fill:var(--bar-down)}
+.chart .bar.sel{stroke:var(--text);stroke-width:2}
+.chart .hit{fill:transparent;cursor:pointer}.chart .hit:hover{fill:var(--text);fill-opacity:.05}
+.tip{position:absolute;pointer-events:none;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;box-shadow:0 4px 16px rgba(0,0,0,.15);min-width:150px}
+.drop{display:flex;align-items:center;justify-content:center;border:2px dashed var(--line);border-radius:10px;padding:26px;text-align:center;cursor:pointer;color:var(--text-2);margin-bottom:10px}
+.drop.over{border-color:var(--accent);background:var(--surface-2)}
+.drop input{display:none}
+textarea{width:100%;min-height:180px;resize:vertical;margin-bottom:10px;font-family:ui-monospace,Consolas,monospace;font-size:12px}
+.pill{display:inline-block;background:var(--surface-2);border-radius:999px;padding:4px 10px;margin:0 6px 6px 0;font-size:12px}
+.pill.ok{background:var(--ok-bg)}.pill.warn{background:var(--warn-bg);color:var(--warn);border-radius:8px}.pill.muted{color:var(--muted)}
+.savebar{display:flex;gap:10px;align-items:center}
+.bm{display:inline-block;background:var(--accent);color:var(--accent-ink);padding:8px 14px;border-radius:8px;text-decoration:none;font-weight:600;cursor:grab}
+.center{max-width:440px;margin:10vh auto;padding:0 16px}
+.center form{display:grid;gap:10px}
+.center label{display:grid;gap:4px;color:var(--text-2);font-size:13px}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(120px);background:var(--text);color:var(--bg);padding:10px 16px;border-radius:10px;transition:transform .25s;max-width:90vw;z-index:20}
+.toast.show{transform:translateX(-50%)}.toast.err{background:var(--neg);color:#fff}
+#loading{position:fixed;inset:0;background:rgba(0,0,0,.15);display:flex;align-items:center;justify-content:center;z-index:15}
+#loading[hidden]{display:none}
+#loading div{background:var(--surface);padding:14px 20px;border-radius:10px}
+@media (max-width:1000px){.kpis{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (max-width:700px){.two{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}main{padding:16px}.bar1{padding:10px 16px}.kv{font-size:18px}}
+</style>
+</head>
+<body>
+<section id="setup" class="center" hidden>
+  <h2>🎟️ Ticket P&amp;L Tracker</h2>
+  <p class="hint">One-time setup: connect your Supabase project. Find both values in Supabase → Project Settings → API.</p>
+  <form id="setupForm">
+    <label>Project URL <input id="sbUrl" type="text" required placeholder="https://xxxx.supabase.co"></label>
+    <label>anon public key <input id="sbKey" type="text" required placeholder="eyJhbGciOi…"></label>
+    <button class="primary">Connect</button>
+    <button type="button" class="ghost" id="demoBtn">Try it without saving (demo)</button>
+  </form>
+</section>
+
+<section id="login" class="center" hidden>
+  <h2>🎟️ Ticket P&amp;L Tracker</h2>
+  <form id="loginForm">
+    <label>Email <input id="email" type="email" required autocomplete="username"></label>
+    <label>Password <input id="password" type="password" required autocomplete="current-password"></label>
+    <button class="primary" id="loginBtn">Sign in</button>
+    <button type="button" class="ghost" id="demoBtn2">Try it without saving (demo)</button>
+    <button type="button" class="link" id="resetConn">Change Supabase connection</button>
+  </form>
+</section>
+
+<div id="app" hidden>
+  <header>
+    <div class="bar1"><h1>🎟️ Ticket P&amp;L</h1><div id="period"></div><div class="spacer"></div><span id="status"></span><button class="ghost" id="signOut">Sign out</button></div>
+    <nav>
+      <button data-tab="overview">Overview</button><button data-tab="artists">Artists</button><button data-tab="shows">Shows</button>
+      <button data-tab="inventory">Inventory</button><button data-tab="sales">Sales</button><button data-tab="import">Import</button><button data-tab="help">Help</button>
+    </nav>
+  </header>
+  <main id="view"></main>
+</div>
+<div id="loading" hidden><div>Loading…</div></div>
+<div id="toast" class="toast"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="config.js"></script>
+<script src="core.js"></script>
+<script src="grabber.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
