@@ -78,6 +78,14 @@ textarea{width:100%;min-height:180px;resize:vertical;margin-bottom:10px;font-fam
 #loading{position:fixed;inset:0;background:rgba(0,0,0,.15);display:flex;align-items:center;justify-content:center;z-index:15}
 #loading[hidden]{display:none}
 #loading div{background:var(--surface);padding:14px 20px;border-radius:10px}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+td a{color:var(--text);font-weight:600;border-bottom:1px dotted var(--muted)}td a:hover{color:var(--accent);text-decoration:none}
+h2 .sub{font-size:14px;font-weight:400;color:var(--muted);margin-left:6px}
+.crumb{margin:0 0 6px}.small{font-size:12px;font-weight:400}
+input[type=search].big{flex:1;min-width:240px;max-width:520px;font-size:15px;padding:10px 12px}
+.chk{display:flex;gap:6px;align-items:center;color:var(--text-2);font-size:13px}
+.log{margin:0;padding-left:18px}.log li{margin:4px 0}
+.card ol{padding-left:20px}.card li{margin:4px 0}
 @media (max-width:1000px){.kpis{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media (max-width:700px){.two{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}main{padding:16px}.bar1{padding:10px 16px}.kv{font-size:18px}}
 </style>
@@ -109,8 +117,8 @@ textarea{width:100%;min-height:180px;resize:vertical;margin-bottom:10px;font-fam
   <header>
     <div class="bar1"><h1>🎟️ Ticket P&amp;L</h1><div id="period"></div><div class="spacer"></div><span id="status"></span><button class="ghost" id="signOut">Sign out</button></div>
     <nav>
-      <button data-tab="overview">Overview</button><button data-tab="artists">Artists</button><button data-tab="shows">Shows</button>
-      <button data-tab="inventory">Inventory</button><button data-tab="sales">Sales</button><button data-tab="import">Import</button><button data-tab="help">Help</button>
+      <button data-tab="overview">Overview</button><button data-tab="artists">Artists</button><button data-tab="venues">Venues</button>
+      <button data-tab="sales">Sales</button><button data-tab="import">Import</button><button data-tab="extension">Extension</button>
     </nav>
   </header>
   <main id="view"></main>
@@ -122,7 +130,6 @@ textarea{width:100%;min-height:180px;resize:vertical;margin-bottom:10px;font-fam
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 <script src="config.js"></script>
 <script src="core.js"></script>
-<script src="grabber.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
