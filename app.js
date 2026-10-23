@@ -186,10 +186,9 @@
     S.saleIndex = {};
     S.raw.sales.forEach(function (r) { S.saleIndex[r.sale_key] = true; });
     derive();
-    if (!S.month) {
-      var withSales = S.R.monthly.filter(function (m) { return m.sales; });
-      S.month = withSales.length ? withSales[0].month : tt_monthKey(new Date());
-      S.year = S.month.slice(0, 4);
+    if (!S.period) {
+      var cur = tt_monthKey(new Date());
+      S.period = S.R.monthly.some(function (m) { return m.month === cur && m.sales; }) ? 'this-month' : 'all';
     }
   }
 
@@ -230,47 +229,6 @@
     } finally {
       $('#loading').hidden = true;
     }
-  }
-
-  // ---------- period ----------
-  function inPeriod(d) {
-    if (!d) return false;
-    if (S.month && S.month !== 'all') return tt_monthKey(d) === S.month;
-    if (S.year && S.year !== 'all') return String(d.getFullYear()) === S.year;
-    return true;
-  }
-  function periodLabel() {
-    if (S.month && S.month !== 'all') return monthLabel(S.month);
-    if (S.year && S.year !== 'all') return S.year;
-    return 'All time';
-  }
-  function allMonths() {
-    var set = {};
-    S.R.monthly.forEach(function (m) { set[m.month] = 1; });
-    set[tt_monthKey(new Date())] = 1;
-    return Object.keys(set).filter(String).sort();
-  }
-  function renderPeriodControls() {
-    var months = allMonths();
-    var years = {}; months.forEach(function (m) { years[m.slice(0, 4)] = 1; });
-    var ys = Object.keys(years).sort().reverse();
-    var yearSel = '<option value="all">All years</option>' + ys.map(function (y) { return '<option' + (y === S.year ? ' selected' : '') + '>' + y + '</option>'; }).join('');
-    var ms = months.filter(function (m) { return S.year === 'all' || m.slice(0, 4) === S.year; }).reverse();
-    var monthSel = '<option value="all">' + (S.year === 'all' ? 'Every month' : 'Whole year') + '</option>' +
-      ms.map(function (m) { return '<option value="' + m + '"' + (m === S.month ? ' selected' : '') + '>' + monthLabel(m) + '</option>'; }).join('');
-    $('#period').innerHTML = '<label>Year <select id="yearSel">' + yearSel + '</select></label>' +
-      '<label>Month <select id="monthSel">' + monthSel + '</select></label>';
-    if (S.year === 'all') $('#yearSel').value = 'all';
-    if (S.month === 'all') $('#monthSel').value = 'all';
-    $('#yearSel').onchange = function (e) { S.year = e.target.value; S.month = 'all'; render(); };
-    $('#monthSel').onchange = function (e) { S.month = e.target.value; render(); };
-  }
-
-  function aggSales(list) {
-    var a = {sales: 0, tickets: 0, revenue: 0, cost: 0, profit: 0, wins: 0};
-    list.forEach(function (s) { a.sales++; a.tickets += s.qty; a.revenue += s.total; a.cost += s.total - s.profit; a.profit += s.profit; if (s.profit > 0) a.wins++; });
-    a.roi = a.cost ? a.profit / a.cost : null; a.winRate = a.sales ? a.wins / a.sales : null;
-    return a;
   }
 
   // ---------- generic table ----------
@@ -343,64 +301,6 @@
     });
   }
 
-  // ---------- chart ----------
-  function chartMonths() {
-    var months = allMonths();
-    if (S.year && S.year !== 'all') {
-      var out = []; for (var i = 1; i <= 12; i++) out.push(S.year + '-' + (i < 10 ? '0' : '') + i); return out;
-    }
-    return months.slice(-24);
-  }
-  function profitChart() {
-    var months = chartMonths();
-    var by = {}; S.R.monthly.forEach(function (m) { by[m.month] = m; });
-    var vals = months.map(function (k) { return by[k] ? by[k].profit : 0; });
-    var max = Math.max(0, Math.max.apply(null, vals)), min = Math.min(0, Math.min.apply(null, vals));
-    if (max === min) max = 1;
-    var W = 720, H = 220, padL = 56, padR = 8, padT = 12, padB = 28;
-    var iw = W - padL - padR, ih = H - padT - padB, bw = iw / months.length;
-    var y = function (v) { return padT + (max - v) / (max - min) * ih; };
-    var ticks = [min, 0, max].filter(function (v, i, a) { return a.indexOf(v) === i; });
-    var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" class="chart" role="img" aria-label="Profit by month">';
-    ticks.forEach(function (t) {
-      svg += '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + y(t) + '" y2="' + y(t) + '" class="' + (t === 0 ? 'axis' : 'grid') + '"/>' +
-        '<text x="' + (padL - 6) + '" y="' + (y(t) + 4) + '" class="tick" text-anchor="end">' + esc(fmt(t, 'usd0')) + '</text>';
-    });
-    months.forEach(function (k, i) {
-      var v = vals[i], x = padL + i * bw, w = Math.max(2, Math.min(36, bw - 6)), cx = x + (bw - w) / 2;
-      var top = y(Math.max(v, 0)), h = Math.abs(y(v) - y(0));
-      if (v !== 0) {
-        var r = Math.min(4, w / 2, h);
-        var path = v > 0
-          ? 'M' + cx + ',' + (top + h) + 'V' + (top + r) + 'Q' + cx + ',' + top + ' ' + (cx + r) + ',' + top + 'H' + (cx + w - r) + 'Q' + (cx + w) + ',' + top + ' ' + (cx + w) + ',' + (top + r) + 'V' + (top + h) + 'Z'
-          : 'M' + cx + ',' + top + 'V' + (top + h - r) + 'Q' + cx + ',' + (top + h) + ' ' + (cx + r) + ',' + (top + h) + 'H' + (cx + w - r) + 'Q' + (cx + w) + ',' + (top + h) + ' ' + (cx + w) + ',' + (top + h - r) + 'V' + top + 'Z';
-        svg += '<path d="' + path + '" class="bar ' + (v > 0 ? 'up' : 'down') + (k === S.month ? ' sel' : '') + '"/>';
-      }
-      var lab = monthLabel(k).split(' ');
-      if (months.length <= 12 || i % 2 === 0) svg += '<text x="' + (x + bw / 2) + '" y="' + (H - 10) + '" class="tick" text-anchor="middle">' + esc(months.length <= 12 ? lab[0] : lab[0] + ' ' + lab[1].slice(2)) + '</text>';
-      svg += '<rect x="' + x + '" y="' + padT + '" width="' + bw + '" height="' + ih + '" class="hit" data-m="' + k + '"/>';
-    });
-    svg += '</svg>';
-    return '<div class="chartbox">' + svg + '<div class="tip" hidden></div></div>';
-  }
-  function wireChart(root) {
-    var box = root.querySelector('.chartbox'); if (!box) return;
-    var tip = box.querySelector('.tip');
-    var by = {}; S.R.monthly.forEach(function (m) { by[m.month] = m; });
-    box.querySelectorAll('.hit').forEach(function (r) {
-      r.onmousemove = function (e) {
-        var m = by[r.dataset.m] || {profit: 0, revenue: 0, sales: 0, tickets: 0};
-        tip.innerHTML = '<b>' + esc(monthLabel(r.dataset.m)) + '</b><br>Profit <span class="' + signClass(m.profit) + '">' + esc(fmt(m.profit, 'susd')) + '</span><br>Revenue ' + esc(fmt(m.revenue, 'usd')) + '<br>' + m.sales + ' sales · ' + m.tickets + ' tickets';
-        tip.hidden = false;
-        var b = box.getBoundingClientRect();
-        var x = e.clientX - b.left + 12; if (x > b.width - 170) x = e.clientX - b.left - 170;
-        tip.style.left = x + 'px'; tip.style.top = Math.max(0, e.clientY - b.top - 20) + 'px';
-      };
-      r.onmouseleave = function () { tip.hidden = true; };
-      r.onclick = function () { S.month = r.dataset.m; S.year = r.dataset.m.slice(0, 4); render(); };
-    });
-  }
-
   // ---------- derived data (artists, venues, shows) ----------
   function splitVenue(v) {
     var p = String(v || '').split(/\s+•\s+/);
@@ -431,225 +331,12 @@
   function artistLink(n) { return '#artist/' + encodeURIComponent(n); }
   function venueLink(n) { return n ? '#venue/' + encodeURIComponent(n) : null; }
 
-  // ---------- views ----------
-  function kpi(label, value, kind, sub) {
-    return '<div class="kpi"><div class="kl">' + esc(label) + '</div><div class="kv ' + (kind === 'susd' || kind === 'spct' ? signClass(value) : '') + '">' + esc(fmt(value, kind) || '—') + '</div>' + (sub ? '<div class="ks">' + esc(sub) + '</div>' : '') + '</div>';
-  }
+  // ---------- kept helpers ----------
   function groupSales(list, keyFn) {
     var by = {};
     list.forEach(function (s) { var k = keyFn(s); (by[k] = by[k] || []).push(s); });
     return Object.keys(by).map(function (k) { var a = aggSales(by[k]); a.key = k; a.list = by[k]; return a; });
   }
-  var COL = {
-    profit: {label: 'Profit', get: function (r) { return r.profit; }, fmt: 'susd', num: true, signed: true},
-    roi: {label: 'ROI', get: function (r) { return r.roi; }, fmt: 'spct', num: true, signed: true},
-    revenue: {label: 'Revenue', get: function (r) { return r.revenue; }, fmt: 'usd', num: true},
-    sales: {label: 'Sales', get: function (r) { return r.sales; }, fmt: 'int', num: true},
-    tickets: {label: 'Tickets sold', get: function (r) { return r.tickets; }, fmt: 'int', num: true}
-  };
-  function saleCols(opts) {
-    opts = opts || {};
-    var c = [{label: 'Sold on', get: function (s) { return s.soldAt; }, fmt: 'datetime'}];
-    if (!opts.noArtist) c.push({label: 'Artist', get: function (s) { return s.artist; }, link: function (s) { return artistLink(s.artist); }});
-    c.push({label: 'Show date', get: function (s) { return s.eventDate; }, fmt: 'date'});
-    if (!opts.noVenue) c.push({label: 'Venue', get: function (s) { return splitVenue(s.venue).name; }, link: function (s) { return venueLink(splitVenue(s.venue).name); }});
-    c.push({label: 'Seats', get: function (s) { return 'Sec ' + s.section + ' · Row ' + s.row; }},
-      {label: 'Qty', get: function (s) { return s.qty; }, fmt: 'int', num: true},
-      {label: 'Paid / tkt', get: function (s) { return s.costPer; }, fmt: 'usd', num: true},
-      {label: 'Sold / tkt', get: function (s) { return s.soldPer; }, fmt: 'usd', num: true},
-      {label: 'Total sale', get: function (s) { return s.total; }, fmt: 'usd', num: true},
-      COL.profit, COL.roi,
-      {label: 'Sold on site', get: function (s) { return s.marketplace; }},
-      {label: 'Time to sell', get: function (s) { return s.timeToSell; }});
-    if (opts.orders) c.push({label: 'Order #', get: function (s) { return (s.orders || []).join(', '); }});
-    return c;
-  }
-
-  function viewOverview() {
-    var sales = S.R.sales.filter(function (s) { return inPeriod(s.soldAt); });
-    var a = aggSales(sales);
-    var spent = 0, boughtTix = 0;
-    S.R.orders.forEach(function (o) { if (inPeriod(o.bought)) { spent += o.total; boughtTix += o.qty; } });
-    var h = holding(S.R.orders);
-    var arts = groupSales(sales, function (s) { return s.artist; });
-    var vens = groupSales(sales.filter(function (s) { return s.venue; }), function (s) { return splitVenue(s.venue).name; });
-    var sorted = sales.slice().sort(function (x, y) { return y.profit - x.profit; });
-    var mini = [
-      {label: 'Artist', get: function (s) { return s.artist; }, link: function (s) { return artistLink(s.artist); }},
-      {label: 'Seats', get: function (s) { return 'Sec ' + s.section + ' · Row ' + s.row + ' · ×' + s.qty; }},
-      COL.profit
-    ];
-    var bad = S.R.sales.filter(function (s) { return tt_notAName(s.event); }).length;
-    var noVenue = S.R.sales.filter(function (s) { return !s.venue; }).length;
-    var warn = bad ? '<div class="banner">⚠ ' + bad.toLocaleString() + ' sales have no artist name because their order number is not in your PL orders. Import the newest PL CSV, or re-send them from the extension (<b>Export entire channel</b>) and they will be repaired — not duplicated.</div>' :
-      noVenue > 20 ? '<div class="banner">ℹ ' + noVenue.toLocaleString() + ' older sales are missing their venue (the earlier version didn\'t read it). Artist names and profit are correct. To fill in venues: in the extension click <b>Export entire channel</b> — they are updated in place, not duplicated.</div>' : '';
-    return warn + '<h2>' + esc(periodLabel()) + '</h2>' +
-      '<div class="kpis">' +
-      kpi('Profit', a.profit, 'susd') + kpi('Revenue', a.revenue, 'usd') +
-      kpi('ROI', a.roi, 'spct', a.winRate === null ? '' : fmt(a.winRate, 'pct') + ' of sales profitable') +
-      kpi('Tickets sold', a.tickets, 'int', a.sales + ' sales') +
-      kpi('Spent on new orders', spent, 'usd', boughtTix.toLocaleString() + ' tickets bought') +
-      kpi('Still holding', h.tickets, 'int', fmt(h.cost, 'usd') + ' in upcoming shows') +
-      '</div>' +
-      '<section class="card"><h3>Profit by month</h3><p class="hint">Hover for details · click a bar to open that month</p>' + profitChart() + '</section>' +
-      '<div class="two">' +
-      '<section class="card"><h3>By artist</h3>' + table('ov-artists', [
-        {label: 'Artist', get: function (r) { return r.key; }, link: function (r) { return artistLink(r.key); }},
-        COL.sales, COL.tickets, COL.profit, COL.roi
-      ], arts, {sort: {label: 'Profit', dir: 'desc'}, searchable: false, empty: 'No sales in this period yet.'}) + '</section>' +
-      '<section class="card"><h3>By venue</h3>' + table('ov-venues', [
-        {label: 'Venue', get: function (r) { return r.key; }, link: function (r) { return venueLink(r.key); }},
-        COL.sales, COL.tickets, COL.profit, COL.roi
-      ], vens, {sort: {label: 'Profit', dir: 'desc'}, searchable: false, empty: 'No sales in this period yet.'}) + '</section>' +
-      '</div>' +
-      '<div class="two"><section class="card"><h3>Biggest wins</h3>' + table('wins', mini, sorted.filter(function (s) { return s.profit > 0; }).slice(0, 8), {searchable: false, nocsv: true, empty: 'None yet.'}) +
-      '</section><section class="card"><h3>Biggest losses</h3>' + table('losses', mini, sorted.filter(function (s) { return s.profit < 0; }).reverse().slice(0, 8), {searchable: false, nocsv: true, empty: 'No losses — nice.'}) + '</section></div>';
-  }
-
-  function viewArtists() {
-    var rows = Object.keys(S.D.artists).map(function (n) {
-      var A = S.D.artists[n];
-      var ps = A.sales.filter(function (s) { return inPeriod(s.soldAt); });
-      var a = aggSales(ps);
-      var bought = 0, spent = 0;
-      A.orders.forEach(function (o) { if (inPeriod(o.bought)) { bought += o.qty; spent += o.total; } });
-      var h = holding(A.orders);
-      var last = null; A.sales.forEach(function (s) { if (s.soldAt && (!last || s.soldAt > last)) last = s.soldAt; });
-      return {artist: n, profit: a.profit, roi: a.roi, sales: a.sales, tickets: a.tickets, revenue: a.revenue, bought: bought, spent: spent, left: h.tickets, leftCost: h.cost, last: last};
-    });
-    var showAll = S.artistsAll;
-    if (!showAll) rows = rows.filter(function (r) { return r.sales || r.bought; });
-    var tools = '<label class="chk"><input type="checkbox" id="artistsAll"' + (showAll ? ' checked' : '') + '> Include artists with no activity in this period</label>';
-    return '<h2>Artists <span class="sub">' + esc(periodLabel()) + '</span></h2>' +
-      '<p class="hint">Type an artist below, then click the name to see every show, venue and sale for them.</p>' +
-      '<section class="card">' + table('artists', [
-        {label: 'Artist', get: function (r) { return r.artist; }, link: function (r) { return artistLink(r.artist); }},
-        COL.profit, COL.roi, COL.sales, COL.tickets, COL.revenue,
-        {label: 'Tickets bought', get: function (r) { return r.bought; }, fmt: 'int', num: true},
-        {label: 'Spent', get: function (r) { return r.spent; }, fmt: 'usd', num: true},
-        {label: 'Still holding', get: function (r) { return r.left; }, fmt: 'int', num: true},
-        {label: 'Last sale', get: function (r) { return r.last; }, fmt: 'date'}
-      ], rows, {sort: {label: 'Profit', dir: 'desc'}, extraTools: tools, bigSearch: 'Search artists… (e.g. Bruno Mars)', empty: 'No artists with activity in this period. Tick "Include artists with no activity" or pick another month.'}) + '</section>';
-  }
-
-  function viewArtist(name) {
-    var A = S.D.artists[name];
-    if (!A) return '<p><a href="#artists">← Artists</a></p><h2>' + esc(name) + '</h2><p class="hint">No data for this artist.</p>';
-    var a = aggSales(A.sales);
-    var bought = 0, spent = 0; A.orders.forEach(function (o) { bought += o.qty; spent += o.total; });
-    var h = holding(A.orders);
-    // shows: one row per show date
-    var shows = {};
-    function SH(d, venueFull) {
-      var k = d ? tt_dayKey(d) : 'unknown';
-      var x = shows[k] || (shows[k] = {date: d, venue: '', bought: 0, spent: 0, sold: 0, revenue: 0, cost: 0, profit: 0, left: 0, sales: 0});
-      if (venueFull && !x.venue) x.venue = venueFull;
-      return x;
-    }
-    A.orders.forEach(function (o) { var x = SH(o.eventDate, o.venueFull); x.bought += o.qty; x.spent += o.total; x.left += o.remaining; });
-    A.sales.forEach(function (s) { var x = SH(s.eventDate, s.venue); x.sold += s.qty; x.revenue += s.total; x.cost += s.total - s.profit; x.profit += s.profit; x.sales++; });
-    var showRows = Object.keys(shows).map(function (k) { var x = shows[k]; x.roi = x.cost ? x.profit / x.cost : null; return x; });
-    var held = A.orders.filter(function (o) { return o.remaining > 0; });
-    return '<p class="crumb"><a href="#artists">← All artists</a></p>' +
-      '<h2>' + esc(name) + ' <span class="sub">All time</span> <button class="link small" data-rename="' + esc(name) + '">rename / merge</button></h2>' +
-      '<div class="kpis">' +
-      kpi('Profit', a.profit, 'susd') + kpi('Revenue', a.revenue, 'usd') +
-      kpi('ROI', a.roi, 'spct', a.winRate === null ? '' : fmt(a.winRate, 'pct') + ' of sales profitable') +
-      kpi('Tickets sold', a.tickets, 'int', 'of ' + bought.toLocaleString() + ' bought · ' + a.sales + ' sales') +
-      kpi('Spent', spent, 'usd', A.orders.length + ' orders') +
-      kpi('Still holding', h.tickets, 'int', fmt(h.cost, 'usd') + ' in upcoming shows') +
-      '</div>' +
-      '<section class="card"><h3>Shows &amp; venues</h3>' + table('a-shows', [
-        {label: 'Show date', get: function (r) { return r.date; }, fmt: 'date'},
-        {label: 'Venue', get: function (r) { return splitVenue(r.venue).name || '—'; }, link: function (r) { return venueLink(splitVenue(r.venue).name); }},
-        {label: 'City', get: function (r) { return splitVenue(r.venue).city; }},
-        {label: 'Bought', get: function (r) { return r.bought; }, fmt: 'int', num: true},
-        {label: 'Sold', get: function (r) { return r.sold; }, fmt: 'int', num: true},
-        {label: 'Left', get: function (r) { return r.left; }, fmt: 'int', num: true},
-        {label: 'Spent', get: function (r) { return r.spent; }, fmt: 'usd', num: true},
-        COL.revenue, COL.profit, COL.roi
-      ], showRows, {sort: {label: 'Show date', dir: 'desc'}, searchable: false}) +
-      '<p class="hint">Venue appears once a ticket for that show has sold (the PL file has no venue column).</p></section>' +
-      '<section class="card"><h3>Every sale</h3>' + table('a-sales', saleCols({noArtist: true, orders: true}), A.sales, {sort: {label: 'Sold on', dir: 'desc'}, empty: 'No sales logged yet.'}) + '</section>' +
-      '<section class="card"><h3>Tickets still in hand</h3>' + table('a-held', [
-        {label: 'Show date', get: function (r) { return r.eventDate; }, fmt: 'date'},
-        {label: 'Seats', get: function (r) { return r.seats.replace(/\s*[\r\n]+\s*/g, ' / '); }, wrap: true},
-        {label: 'Bought', get: function (r) { return r.qty; }, fmt: 'int', num: true},
-        {label: 'Sold', get: function (r) { return r.soldQty; }, fmt: 'int', num: true},
-        {label: 'Left', get: function (r) { return r.remaining; }, fmt: 'int', num: true},
-        {label: 'Cost of what\'s left', get: function (r) { return r.unsoldCost; }, fmt: 'usd', num: true},
-        {label: 'Status', get: function (r) { return r.status; }},
-        {label: 'Order #', get: function (r) { return r.order; }},
-        {label: 'Bought on', get: function (r) { return r.bought; }, fmt: 'date'}
-      ], held, {sort: {label: 'Show date', dir: 'asc'}, searchable: false, empty: 'Everything for this artist has sold.'}) + '</section>';
-  }
-
-  function viewVenues() {
-    var rows = Object.keys(S.D.venues).map(function (n) {
-      var V = S.D.venues[n];
-      var ps = V.sales.filter(function (s) { return inPeriod(s.soldAt); });
-      var a = aggSales(ps);
-      var arts = {}; ps.forEach(function (s) { arts[s.artist] = 1; });
-      a.venue = n; a.city = V.city; a.artists = Object.keys(arts).length;
-      return a;
-    }).filter(function (r) { return r.sales; });
-    return '<h2>Venues <span class="sub">' + esc(periodLabel()) + '</span></h2>' +
-      '<p class="hint">Click a venue to see every artist and sale there.</p>' +
-      '<section class="card">' + table('venues', [
-        {label: 'Venue', get: function (r) { return r.venue; }, link: function (r) { return venueLink(r.venue); }},
-        {label: 'City', get: function (r) { return r.city; }},
-        COL.profit, COL.roi, COL.sales, COL.tickets, COL.revenue,
-        {label: 'Artists', get: function (r) { return r.artists; }, fmt: 'int', num: true}
-      ], rows, {sort: {label: 'Profit', dir: 'desc'}, bigSearch: 'Search venues or cities…', empty: 'No sales in this period.'}) + '</section>';
-  }
-
-  function viewVenue(name) {
-    var V = S.D.venues[name];
-    if (!V) return '<p><a href="#venues">← Venues</a></p><h2>' + esc(name) + '</h2><p class="hint">No data for this venue.</p>';
-    var a = aggSales(V.sales);
-    var arts = groupSales(V.sales, function (s) { return s.artist; }).map(function (r) {
-      var d = {}; r.list.forEach(function (s) { d[s.eventDate ? tt_dayKey(s.eventDate) : ''] = 1; }); r.shows = Object.keys(d).length; return r;
-    });
-    var h = holding(V.orders);
-    return '<p class="crumb"><a href="#venues">← All venues</a></p>' +
-      '<h2>' + esc(name) + ' <span class="sub">' + esc(V.city) + ' · All time</span></h2>' +
-      '<div class="kpis">' +
-      kpi('Profit', a.profit, 'susd') + kpi('Revenue', a.revenue, 'usd') +
-      kpi('ROI', a.roi, 'spct', a.winRate === null ? '' : fmt(a.winRate, 'pct') + ' of sales profitable') +
-      kpi('Tickets sold', a.tickets, 'int', a.sales + ' sales') +
-      kpi('Artists', arts.length, 'int') +
-      kpi('Still holding', h.tickets, 'int', fmt(h.cost, 'usd') + ' upcoming here') +
-      '</div>' +
-      '<section class="card"><h3>By artist</h3>' + table('v-artists', [
-        {label: 'Artist', get: function (r) { return r.key; }, link: function (r) { return artistLink(r.key); }},
-        {label: 'Shows', get: function (r) { return r.shows; }, fmt: 'int', num: true},
-        COL.sales, COL.tickets, COL.revenue, COL.profit, COL.roi
-      ], arts, {sort: {label: 'Profit', dir: 'desc'}, searchable: false}) + '</section>' +
-      '<section class="card"><h3>Every sale here</h3>' + table('v-sales', saleCols({noVenue: true}), V.sales, {sort: {label: 'Sold on', dir: 'desc'}}) + '</section>';
-  }
-
-  function viewSales() {
-    var rows = S.R.sales.filter(function (s) { return inPeriod(s.soldAt); });
-    return '<h2>Sales <span class="sub">' + esc(periodLabel()) + '</span></h2>' +
-      '<section class="card">' + table('sales', saleCols({orders: true}).concat([{label: 'In PL orders?', get: function (r) { return r.matched ? 'Yes' : 'No'; }}]), rows,
-        {sort: {label: 'Sold on', dir: 'desc'}, bigSearch: 'Search sales (artist, venue, section, order #)…',
-          actions: function (r) { return '<button class="link danger" data-delsale="' + esc(r.key) + '" title="Remove this sale">Remove</button>'; }}) + '</section>';
-  }
-
-  function viewImport() {
-    var log = (S.importLog || []).slice(-8).reverse().map(function (l) {
-      return '<li><b>' + esc(l.when) + '</b> — ' + esc(l.text) + '</li>';
-    }).join('');
-    return '<h2>Import</h2><p class="hint">Add either one, any time — they are saved as soon as you drop or paste them. Only new or changed data is added; repeats are skipped. The extension fills the sales box for you.</p>' +
-      '<div class="two">' +
-      '<section class="card"><h3>PL orders CSV</h3><p class="hint">PL Orders sheet → File → Download → Comma-separated values (.csv). Drop it here.</p>' +
-      '<label class="drop" id="csvDrop"><input type="file" id="csvFile" accept=".csv,text/csv"><span>Drop the CSV here or click to choose</span></label></section>' +
-      '<section class="card"><h3>Discord sales</h3><p class="hint">Paste sale messages here (Ctrl+V) — or use the extension\'s "Export new sales".</p>' +
-      '<textarea id="discordText" placeholder="Paste here (Ctrl+V)"></textarea></section>' +
-      '</div>' +
-      '<section class="card"><h3>Recent imports</h3>' + (log ? '<ul class="log">' + log + '</ul>' : '<p class="hint">Nothing imported in this session yet.</p>') + '</section>';
-  }
-
   function viewExtension() {
     return '<h2>Sales Grabber extension</h2>' +
       '<section class="card"><h3>Install (one time)</h3>' +
@@ -723,6 +410,310 @@
     }, error: function (e) { toast('Could not read CSV: ' + e.message, true); }});
   }
 
+  // ---------- period (chips) ----------
+  function monthKeyOffset(k, n) { var p = k.split('-'); var d = new Date(+p[0], +p[1] - 1 + n, 1); return tt_monthKey(d); }
+  function periodRange() {
+    var cur = tt_monthKey(new Date()), p = S.period || 'this-month';
+    if (p === 'this-month') return {from: cur, to: cur};
+    if (p === 'last-month') { var lm = monthKeyOffset(cur, -1); return {from: lm, to: lm}; }
+    if (p === 'last-3') return {from: monthKeyOffset(cur, -2), to: cur};
+    if (p === 'this-year') return {from: cur.slice(0, 4) + '-01', to: cur.slice(0, 4) + '-12'};
+    if (p === 'all') return {from: '0000-00', to: '9999-99'};
+    if (/^m:/.test(p)) return {from: p.slice(2), to: p.slice(2)};
+    if (/^y:/.test(p)) return {from: p.slice(2) + '-01', to: p.slice(2) + '-12'};
+    return {from: cur, to: cur};
+  }
+  function inPeriod(d) {
+    if (!d) return false;
+    var k = tt_monthKey(d), r = periodRange();
+    return k >= r.from && k <= r.to;
+  }
+  function periodLabel() {
+    var p = S.period || 'this-month';
+    return {'this-month': 'This month', 'last-month': 'Last month', 'last-3': 'Last 3 months', 'this-year': 'This year', 'all': 'All time'}[p] ||
+      (/^m:/.test(p) ? monthLabel(p.slice(2)) : /^y:/.test(p) ? p.slice(2) : '');
+  }
+  function allMonths() {
+    var set = {};
+    S.R.monthly.forEach(function (m) { if (m.month) set[m.month] = 1; });
+    set[tt_monthKey(new Date())] = 1;
+    return Object.keys(set).sort();
+  }
+  function periodChips() {
+    var p = S.period || 'this-month';
+    var chips = [['this-month', 'This month'], ['last-month', 'Last month'], ['last-3', 'Last 3 months'], ['this-year', 'This year'], ['all', 'All time']];
+    var months = allMonths().slice().reverse();
+    var years = {}; months.forEach(function (m) { years[m.slice(0, 4)] = 1; });
+    var pick = '<select class="chip-select" id="pickPeriod"><option value="">Pick a month…</option>' +
+      months.map(function (m) { return '<option value="m:' + m + '"' + (p === 'm:' + m ? ' selected' : '') + '>' + monthLabel(m) + '</option>'; }).join('') +
+      Object.keys(years).sort().reverse().map(function (y) { return '<option value="y:' + y + '"' + (p === 'y:' + y ? ' selected' : '') + '>All of ' + y + '</option>'; }).join('') + '</select>';
+    return '<div class="chips">' + chips.map(function (c) { return '<button class="chip' + (p === c[0] ? ' on' : '') + '" data-period="' + c[0] + '">' + c[1] + '</button>'; }).join('') + pick + '</div>';
+  }
+
+  function aggSales(list) {
+    var a = {sales: 0, tickets: 0, revenue: 0, cost: 0, profit: 0, wins: 0};
+    list.forEach(function (s) { a.sales++; a.tickets += s.qty; a.revenue += s.total; a.cost += s.total - s.profit; a.profit += s.profit; if (s.profit > 0) a.wins++; });
+    a.roi = a.cost ? a.profit / a.cost : null; a.winRate = a.sales ? a.wins / a.sales : null;
+    return a;
+  }
+
+  // ---------- chart ----------
+  function chartMonths() {
+    var r = periodRange(), cur = tt_monthKey(new Date());
+    if (r.from.slice(0, 4) === r.to.slice(0, 4) && r.from !== '0000-00') {
+      var y = r.from.slice(0, 4), out = [];
+      for (var i = 1; i <= 12; i++) out.push(y + '-' + (i < 10 ? '0' : '') + i);
+      return out;
+    }
+    var out2 = []; for (var j = 11; j >= 0; j--) out2.push(monthKeyOffset(cur, -j)); return out2;
+  }
+  function profitChart() {
+    var months = chartMonths(), sel = periodRange();
+    var by = {}; S.R.monthly.forEach(function (m) { by[m.month] = m; });
+    var vals = months.map(function (k) { return by[k] ? by[k].profit : 0; });
+    var max = Math.max(0, Math.max.apply(null, vals)), min = Math.min(0, Math.min.apply(null, vals));
+    if (max === min) max = 1;
+    var W = 720, H = 190, padL = 56, padR = 8, padT = 12, padB = 26;
+    var iw = W - padL - padR, ih = H - padT - padB, bw = iw / months.length;
+    var y = function (v) { return padT + (max - v) / (max - min) * ih; };
+    var ticks = [min, 0, max].filter(function (v, i, a) { return a.indexOf(v) === i; });
+    var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" class="chart" role="img" aria-label="Profit by month">';
+    ticks.forEach(function (t) {
+      svg += '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + y(t) + '" y2="' + y(t) + '" class="' + (t === 0 ? 'axis' : 'grid') + '"/>' +
+        '<text x="' + (padL - 6) + '" y="' + (y(t) + 4) + '" class="tick" text-anchor="end">' + esc(fmt(t, 'usd0')) + '</text>';
+    });
+    months.forEach(function (k, i) {
+      var v = vals[i], x = padL + i * bw, w = Math.max(2, Math.min(34, bw - 8)), cx = x + (bw - w) / 2;
+      var top = y(Math.max(v, 0)), h = Math.abs(y(v) - y(0));
+      var inSel = k >= sel.from && k <= sel.to;
+      if (v !== 0) {
+        var r = Math.min(4, w / 2, h);
+        var path = v > 0
+          ? 'M' + cx + ',' + (top + h) + 'V' + (top + r) + 'Q' + cx + ',' + top + ' ' + (cx + r) + ',' + top + 'H' + (cx + w - r) + 'Q' + (cx + w) + ',' + top + ' ' + (cx + w) + ',' + (top + r) + 'V' + (top + h) + 'Z'
+          : 'M' + cx + ',' + top + 'V' + (top + h - r) + 'Q' + cx + ',' + (top + h) + ' ' + (cx + r) + ',' + (top + h) + 'H' + (cx + w - r) + 'Q' + (cx + w) + ',' + (top + h) + ' ' + (cx + w) + ',' + (top + h - r) + 'V' + top + 'Z';
+        svg += '<path d="' + path + '" class="bar ' + (v > 0 ? 'up' : 'down') + (inSel ? '' : ' dim') + '"/>';
+      }
+      svg += '<text x="' + (x + bw / 2) + '" y="' + (H - 8) + '" class="tick" text-anchor="middle">' + esc(monthLabel(k).split(' ')[0]) + '</text>';
+      svg += '<rect x="' + x + '" y="' + padT + '" width="' + bw + '" height="' + ih + '" class="hit" data-m="' + k + '"/>';
+    });
+    return '<div class="chartbox">' + svg + '</svg><div class="tip" hidden></div></div>';
+  }
+  function wireChart(root) {
+    var box = root.querySelector('.chartbox'); if (!box) return;
+    var tip = box.querySelector('.tip');
+    var by = {}; S.R.monthly.forEach(function (m) { by[m.month] = m; });
+    box.querySelectorAll('.hit').forEach(function (r) {
+      r.onmousemove = function (e) {
+        var m = by[r.dataset.m] || {profit: 0, revenue: 0, sales: 0, tickets: 0};
+        tip.innerHTML = '<b>' + esc(monthLabel(r.dataset.m)) + '</b><br>Profit <span class="' + signClass(m.profit) + '">' + esc(fmt(m.profit, 'susd')) + '</span><br>Revenue ' + esc(fmt(m.revenue, 'usd')) + '<br>' + m.sales + ' sales · ' + m.tickets + ' tickets';
+        tip.hidden = false;
+        var b = box.getBoundingClientRect();
+        var x = e.clientX - b.left + 12; if (x > b.width - 170) x = e.clientX - b.left - 170;
+        tip.style.left = x + 'px'; tip.style.top = Math.max(0, e.clientY - b.top - 20) + 'px';
+      };
+      r.onmouseleave = function () { tip.hidden = true; };
+      r.onclick = function () { S.period = 'm:' + r.dataset.m; render(); };
+    });
+  }
+
+  // ---------- small building blocks ----------
+  function pl(n, w) { return (n || 0).toLocaleString() + ' ' + w + (n === 1 ? '' : 's'); }
+  function pill(value, label, kind) {
+    return '<div class="pill2"><b class="' + (kind === 'susd' || kind === 'spct' ? signClass(value) : '') + '">' + esc(fmt(value, kind) || '—') + '</b><span>' + esc(label) + '</span></div>';
+  }
+  function money(v) { return '<span class="' + signClass(v) + '">' + esc(fmt(v, 'susd')) + '</span>'; }
+  function searchBox(id, ph) {
+    return '<input type="search" class="bigsearch" data-q="' + id + '" placeholder="' + esc(ph) + '" value="' + esc(S.search[id] || '') + '">';
+  }
+  function sortChips(id, opts) {
+    var cur = S.sort[id] || opts[0][0];
+    return '<div class="chips"><span class="chiplabel">Sort</span>' + opts.map(function (o) {
+      return '<button class="chip' + (cur === o[0] ? ' on' : '') + '" data-sortchip="' + id + '" data-v="' + o[0] + '">' + o[1] + '</button>';
+    }).join('') + '</div>';
+  }
+  function matches(id, text) { var q = (S.search[id] || '').toLowerCase().trim(); return !q || String(text).toLowerCase().indexOf(q) >= 0; }
+  function moreBtn(id, shown, total) {
+    return total > shown ? '<button class="more" data-more="' + id + '">Show more (' + (total - shown).toLocaleString() + ' more)</button>' : '';
+  }
+  function limitFor(id, base) { return (S.limit && S.limit[id]) || base; }
+  function entityRow(href, title, sub, profit, roi) {
+    return '<a class="row" href="' + esc(href) + '"><div class="rmain"><div class="rtitle">' + esc(title) + '</div><div class="rsub">' + sub + '</div></div>' +
+      '<div class="rnum"><div class="rprofit ' + signClass(profit) + '">' + esc(fmt(profit, 'susd')) + '</div><div class="rsub">' + (roi === null || roi === undefined ? '' : esc(fmt(roi, 'spct')) + ' ROI') + '</div></div></a>';
+  }
+  function saleRow(s, opts) {
+    opts = opts || {};
+    var v = splitVenue(s.venue);
+    var who = opts.noArtist ? '' : '<a href="' + esc(artistLink(s.artist)) + '" class="strong">' + esc(s.artist) + '</a>';
+    var where = v.name && !opts.noVenue ? '<a href="' + esc(venueLink(v.name)) + '">' + esc(v.name) + '</a>' + (v.city ? ', ' + esc(v.city) : '') : esc(v.city || '');
+    return '<div class="row sale"><div class="rdate">' + esc(fmt(s.soldAt, 'date')) + '<br><span>' + esc(s.soldAt ? s.soldAt.toLocaleTimeString('en-US', {hour: 'numeric', minute: '2-digit'}) : '') + '</span></div>' +
+      '<div class="rmain"><div class="rtitle">' + who + (who && where ? ' <span class="dot">·</span> ' : '') + where + '</div>' +
+      '<div class="rsub">Show ' + esc(fmt(s.eventDate, 'date')) + ' · Sec ' + esc(s.section) + ' · Row ' + esc(s.row) + ' · ' + s.qty + ' tkt' + (s.qty === 1 ? '' : 's') +
+      ' · paid ' + esc(fmt(s.costPer, 'usd')) + ' → sold ' + esc(fmt(s.soldPer, 'usd')) + ' each · ' + esc(s.marketplace || '') + (s.timeToSell ? ' · ' + esc(s.timeToSell) : '') + '</div></div>' +
+      '<div class="rnum"><div class="rprofit ' + signClass(s.profit) + '">' + esc(fmt(s.profit, 'susd')) + '</div><div class="rsub">' + esc(fmt(s.total, 'usd')) + ' · ' + esc(fmt(s.roi, 'spct')) + '</div></div>' +
+      (opts.del ? '<button class="x" data-delsale="' + esc(s.key) + '" title="Remove this sale">×</button>' : '') + '</div>';
+  }
+  function list(rows, empty) { return rows.length ? '<div class="list">' + rows.join('') + '</div>' : '<p class="empty">' + esc(empty || 'Nothing here yet.') + '</p>'; }
+
+  // ---------- views ----------
+  function banner() {
+    var bad = S.R.sales.filter(function (s) { return tt_notAName(s.event); }).length;
+    var noVenue = S.R.sales.filter(function (s) { return !s.venue; }).length;
+    if (bad) return '<div class="banner">⚠ ' + bad.toLocaleString() + ' sales have no artist name because their order number is not in your PL orders. Import the newest PL CSV, or re-send them from the extension (<b>Export entire channel</b>).</div>';
+    if (noVenue > 20) return '<div class="banner">ℹ ' + noVenue.toLocaleString() + ' older sales are missing their venue. To fill them in, run <b>Export entire channel</b> in the extension once — nothing gets duplicated.</div>';
+    return '';
+  }
+  function viewOverview() {
+    var sales = S.R.sales.filter(function (s) { return inPeriod(s.soldAt); });
+    var a = aggSales(sales);
+    var spent = 0; S.R.orders.forEach(function (o) { if (inPeriod(o.bought)) spent += o.total; });
+    var h = holding(S.R.orders);
+    var arts = groupSales(sales, function (s) { return s.artist; }).sort(function (x, y) { return y.profit - x.profit; });
+    var vens = groupSales(sales.filter(function (s) { return s.venue; }), function (s) { return splitVenue(s.venue).name; }).sort(function (x, y) { return y.profit - x.profit; });
+    var recent = sales.slice().sort(function (x, y) { return (y.soldAt || 0) - (x.soldAt || 0); }).slice(0, 8);
+    function top(rows, link, n) {
+      return rows.slice(0, n).map(function (r) { return entityRow(link(r.key), r.key, pl(r.sales, 'sale') + ' · ' + pl(r.tickets, 'ticket'), r.profit, r.roi); });
+    }
+    return banner() + chipsBar() +
+      '<div class="pills">' + pill(a.profit, 'profit', 'susd') + pill(a.revenue, 'revenue', 'usd') + pill(a.roi, 'ROI', 'spct') +
+      pill(a.tickets, 'tickets sold', 'int') + pill(a.sales, 'sales', 'int') + pill(spent, 'spent on new orders', 'usd') + pill(h.tickets, 'tickets still holding', 'int') + '</div>' +
+      '<section class="card"><div class="cardhead"><h3>Profit by month</h3><span class="hint">click a month to open it</span></div>' + profitChart() + '</section>' +
+      '<div class="two">' +
+      '<section class="card"><div class="cardhead"><h3>Top artists</h3><a href="#artists">See all →</a></div>' + list(top(arts, artistLink, 8), 'No sales in this period.') +
+      (arts.length > 8 ? '<div class="foot">Bottom: ' + arts.slice(-3).reverse().map(function (r) { return '<a href="' + esc(artistLink(r.key)) + '">' + esc(r.key) + '</a> ' + money(r.profit); }).join(' · ') + '</div>' : '') + '</section>' +
+      '<section class="card"><div class="cardhead"><h3>Top venues</h3><a href="#venues">See all →</a></div>' + list(top(vens, venueLink, 8), 'No venues yet in this period.') + '</section>' +
+      '</div>' +
+      '<section class="card"><div class="cardhead"><h3>Latest sales</h3><a href="#sales">See all →</a></div>' + list(recent.map(function (s) { return saleRow(s); }), 'No sales in this period.') + '</section>';
+  }
+  function chipsBar() { return '<div class="toolbar"><h2>' + esc(periodLabel()) + '</h2>' + periodChips() + '</div>'; }
+
+  function artistRows() {
+    return Object.keys(S.D.artists).map(function (n) {
+      var A = S.D.artists[n];
+      var a = aggSales(A.sales.filter(function (s) { return inPeriod(s.soldAt); }));
+      var h = holding(A.orders);
+      var last = null; A.sales.forEach(function (s) { if (s.soldAt && (!last || s.soldAt > last)) last = s.soldAt; });
+      a.name = n; a.left = h.tickets; a.leftCost = h.cost; a.last = last;
+      return a;
+    });
+  }
+  function viewArtists() {
+    var mode = S.sort.artists || 'profit';
+    var rows = artistRows().filter(function (r) { return matches('artists', r.name) && (S.search.artists || r.sales || (mode === 'holding' && r.left)); });
+    var sorters = {profit: function (x, y) { return y.profit - x.profit; }, worst: function (x, y) { return x.profit - y.profit; }, sales: function (x, y) { return y.tickets - x.tickets; },
+      recent: function (x, y) { return (y.last || 0) - (x.last || 0); }, holding: function (x, y) { return y.left - x.left; }, az: function (x, y) { return x.name.localeCompare(y.name); }};
+    rows.sort(sorters[mode] || sorters.profit);
+    var lim = limitFor('artists', 40);
+    return chipsBar() +
+      '<section class="card">' + searchBox('artists', 'Search any artist…') +
+      sortChips('artists', [['profit', 'Most profit'], ['worst', 'Biggest losses'], ['sales', 'Most tickets sold'], ['recent', 'Recently sold'], ['holding', 'Most still holding'], ['az', 'A–Z']]) +
+      '<p class="hint">' + rows.length + ' artists' + (S.search.artists ? '' : ' with sales in ' + periodLabel().toLowerCase()) + ' · click one to see every show, venue and sale</p>' +
+      list(rows.slice(0, lim).map(function (r) {
+        return entityRow(artistLink(r.name), r.name, pl(r.sales, 'sale') + ' · ' + pl(r.tickets, 'ticket') + ' sold' + (r.left ? ' · <b>' + r.left + '</b> still holding' : '') + (r.last ? ' · last sale ' + esc(fmt(r.last, 'date')) : ''), r.profit, r.roi);
+      }), S.search.artists ? 'No artist matches "' + S.search.artists + '".' : 'No sales in this period — try "All time".') + moreBtn('artists', lim, rows.length) + '</section>';
+  }
+
+  function viewArtist(name) {
+    var A = S.D.artists[name];
+    if (!A) return '<p class="crumb"><a href="#artists">← Artists</a></p><h2>' + esc(name) + '</h2><p class="empty">No data for this artist.</p>';
+    var a = aggSales(A.sales);
+    var bought = 0, spent = 0; A.orders.forEach(function (o) { bought += o.qty; spent += o.total; });
+    var h = holding(A.orders);
+    var shows = {};
+    function SH(d, venueFull) {
+      var k = d ? tt_dayKey(d) : 'unknown';
+      var x = shows[k] || (shows[k] = {k: k, date: d, venue: '', bought: 0, spent: 0, left: 0, sales: []});
+      if (venueFull && !x.venue) x.venue = venueFull;
+      return x;
+    }
+    A.orders.forEach(function (o) { var x = SH(o.eventDate, o.venueFull); x.bought += o.qty; x.spent += o.total; x.left += o.remaining; });
+    A.sales.forEach(function (s) { SH(s.eventDate, s.venue).sales.push(s); });
+    var showRows = Object.keys(shows).map(function (k) { return shows[k]; }).sort(function (x, y) { return (y.date || 0) - (x.date || 0); });
+    var open = S.openShow || {};
+    var showHtml = showRows.map(function (x) {
+      var g = aggSales(x.sales), v = splitVenue(x.venue), key = name + '|' + x.k, isOpen = open[key];
+      var past = x.date && x.date < new Date(new Date().setHours(0, 0, 0, 0));
+      return '<div class="show' + (isOpen ? ' open' : '') + '">' +
+        '<button class="row showrow" data-show="' + esc(key) + '"><div class="rdate">' + esc(x.date ? fmt(x.date, 'date') : 'Date unknown') + '<br><span>' + (past ? 'past' : 'upcoming') + '</span></div>' +
+        '<div class="rmain"><div class="rtitle">' + (v.name ? esc(v.name) : '<span class="muted">Venue shows once a ticket sells</span>') + (v.city ? ' <span class="muted">· ' + esc(v.city) + '</span>' : '') + '</div>' +
+        '<div class="rsub">Bought ' + x.bought + ' · sold ' + g.tickets + ' · <b>' + x.left + ' left</b> · spent ' + esc(fmt(x.spent, 'usd')) + (g.sales ? ' · ' + g.sales + ' sale' + (g.sales === 1 ? '' : 's') : '') + '</div></div>' +
+        '<div class="rnum"><div class="rprofit ' + signClass(g.profit) + '">' + (g.sales ? esc(fmt(g.profit, 'susd')) : '—') + '</div><div class="rsub">' + (g.roi === null ? '' : esc(fmt(g.roi, 'spct')) + ' ROI') + '</div></div>' +
+        '<span class="chev">' + (g.sales ? (isOpen ? '▾' : '▸') : '') + '</span></button>' +
+        (isOpen && g.sales ? '<div class="sublist">' + x.sales.slice().sort(function (p, q) { return (q.soldAt || 0) - (p.soldAt || 0); }).map(function (s) { return saleRow(s, {noArtist: true, noVenue: true}); }).join('') + '</div>' : '') +
+        '</div>';
+    }).join('');
+    return '<p class="crumb"><a href="#artists">← All artists</a></p>' +
+      '<div class="toolbar"><h2>' + esc(name) + '</h2><button class="chip" data-rename="' + esc(name) + '">Rename / merge</button></div>' +
+      '<div class="pills">' + pill(a.profit, 'profit (all time)', 'susd') + pill(a.revenue, 'revenue', 'usd') + pill(a.roi, 'ROI', 'spct') +
+      pill(a.tickets, 'sold of ' + bought.toLocaleString() + ' bought', 'int') + pill(spent, 'spent', 'usd') + pill(h.tickets, 'still holding', 'int') + pill(h.cost, 'cost of what\'s left', 'usd') + '</div>' +
+      '<section class="card"><div class="cardhead"><h3>Shows</h3><span class="hint">click a show to see its sales</span></div>' + (showHtml ? '<div class="list">' + showHtml + '</div>' : '<p class="empty">No shows.</p>') + '</section>';
+  }
+
+  function viewVenues() {
+    var mode = S.sort.venues || 'profit';
+    var rows = Object.keys(S.D.venues).map(function (n) {
+      var V = S.D.venues[n];
+      var a = aggSales(V.sales.filter(function (s) { return inPeriod(s.soldAt); }));
+      var arts = {}; V.sales.forEach(function (s) { if (inPeriod(s.soldAt)) arts[s.artist] = 1; });
+      a.name = n; a.city = V.city; a.artists = Object.keys(arts);
+      return a;
+    }).filter(function (r) { return r.sales && matches('venues', r.name + ' ' + r.city + ' ' + r.artists.join(' ')); });
+    var sorters = {profit: function (x, y) { return y.profit - x.profit; }, worst: function (x, y) { return x.profit - y.profit; }, sales: function (x, y) { return y.tickets - x.tickets; }, az: function (x, y) { return x.name.localeCompare(y.name); }};
+    rows.sort(sorters[mode] || sorters.profit);
+    var lim = limitFor('venues', 40);
+    return chipsBar() + '<section class="card">' + searchBox('venues', 'Search a venue or city…') +
+      sortChips('venues', [['profit', 'Most profit'], ['worst', 'Biggest losses'], ['sales', 'Most tickets sold'], ['az', 'A–Z']]) +
+      '<p class="hint">' + rows.length + ' venues with sales in ' + periodLabel().toLowerCase() + '</p>' +
+      list(rows.slice(0, lim).map(function (r) {
+        return entityRow(venueLink(r.name), r.name, esc(r.city) + ' · ' + pl(r.sales, 'sale') + ' · ' + pl(r.tickets, 'ticket') + ' · ' + esc(r.artists.slice(0, 3).join(', ')) + (r.artists.length > 3 ? ' +' + (r.artists.length - 3) : ''), r.profit, r.roi);
+      }), 'No venues with sales in this period.') + moreBtn('venues', lim, rows.length) + '</section>';
+  }
+
+  function viewVenue(name) {
+    var V = S.D.venues[name];
+    if (!V) return '<p class="crumb"><a href="#venues">← Venues</a></p><h2>' + esc(name) + '</h2><p class="empty">No data for this venue.</p>';
+    var a = aggSales(V.sales);
+    var arts = groupSales(V.sales, function (s) { return s.artist; }).sort(function (x, y) { return y.profit - x.profit; });
+    var sales = V.sales.slice().sort(function (x, y) { return (y.soldAt || 0) - (x.soldAt || 0); });
+    var lim = limitFor('vsales', 30);
+    return '<p class="crumb"><a href="#venues">← All venues</a></p>' +
+      '<div class="toolbar"><h2>' + esc(name) + ' <span class="sub">' + esc(V.city) + '</span></h2></div>' +
+      '<div class="pills">' + pill(a.profit, 'profit (all time)', 'susd') + pill(a.revenue, 'revenue', 'usd') + pill(a.roi, 'ROI', 'spct') +
+      pill(a.tickets, 'tickets sold', 'int') + pill(a.sales, 'sales', 'int') + pill(arts.length, 'artists', 'int') + '</div>' +
+      '<div class="two"><section class="card"><div class="cardhead"><h3>Artists here</h3></div>' +
+      list(arts.map(function (r) { return entityRow(artistLink(r.key), r.key, pl(r.sales, 'sale') + ' · ' + pl(r.tickets, 'ticket'), r.profit, r.roi); })) + '</section>' +
+      '<section class="card"><div class="cardhead"><h3>Every sale here</h3></div>' + list(sales.slice(0, lim).map(function (s) { return saleRow(s, {noVenue: true}); })) + moreBtn('vsales', lim, sales.length) + '</section></div>';
+  }
+
+  function viewSales() {
+    var f = S.sort.salesf || 'all';
+    var rows = S.R.sales.filter(function (s) {
+      if (!inPeriod(s.soldAt)) return false;
+      if (f === 'win' && s.profit <= 0) return false;
+      if (f === 'loss' && s.profit >= 0) return false;
+      return matches('sales', [s.artist, s.venue, s.section, 'row ' + s.row, s.marketplace, (s.orders || []).join(' ')].join(' '));
+    }).sort(function (x, y) { return (y.soldAt || 0) - (x.soldAt || 0); });
+    var a = aggSales(rows), lim = limitFor('sales', 50);
+    S._csv = rows;
+    return chipsBar() + '<section class="card">' + searchBox('sales', 'Search sales — artist, venue, section, site, order #…') +
+      '<div class="chips"><span class="chiplabel">Show</span>' + [['all', 'All sales'], ['win', 'Profitable'], ['loss', 'Losses']].map(function (o) {
+        return '<button class="chip' + (f === o[0] ? ' on' : '') + '" data-sortchip="salesf" data-v="' + o[0] + '">' + o[1] + '</button>'; }).join('') +
+      '<button class="chip ghostchip" id="csvBtn">⬇ Download CSV</button></div>' +
+      '<p class="hint">' + rows.length.toLocaleString() + ' sales · ' + a.tickets.toLocaleString() + ' tickets · profit ' + money(a.profit) + '</p>' +
+      list(rows.slice(0, lim).map(function (s) { return saleRow(s, {del: true}); }), 'No sales match.') + moreBtn('sales', lim, rows.length) + '</section>';
+  }
+
+  function viewImport() {
+    var log = (S.importLog || []).slice(-8).reverse().map(function (l) { return '<li><b>' + esc(l.when) + '</b> — ' + esc(l.text) + '</li>'; }).join('');
+    return '<h2>Import</h2><p class="hint">Add either one, any time — it saves the moment you drop or paste. Only new or changed data is added; repeats are skipped.</p>' +
+      '<div class="two">' +
+      '<section class="card"><h3>PL orders CSV</h3><p class="hint">PL Orders sheet → File → Download → Comma-separated values (.csv).</p>' +
+      '<label class="drop" id="csvDrop"><input type="file" id="csvFile" accept=".csv,text/csv"><span>Drop the CSV here or click to choose</span></label></section>' +
+      '<section class="card"><h3>Discord sales</h3><p class="hint">The extension does this for you. Or paste sale messages here (Ctrl+V).</p>' +
+      '<textarea id="discordText" placeholder="Paste here (Ctrl+V)"></textarea></section>' +
+      '</div>' +
+      '<section class="card"><h3>Recent imports</h3>' + (log ? '<ul class="log">' + log + '</ul>' : '<p class="hint">Nothing imported in this session yet.</p>') + '</section>';
+  }
+
   // ---------- routing + render ----------
   function route() {
     var h = decodeURIComponent(location.hash.replace(/^#/, ''));
@@ -732,19 +723,43 @@
     render();
     window.scrollTo(0, 0);
   }
+  function downloadCsv(rows) {
+    var head = ['Sold on', 'Artist', 'Show date', 'Venue', 'City', 'Section', 'Row', 'Qty', 'Paid per ticket', 'Sold per ticket', 'Total sale', 'Profit', 'ROI', 'Sold on site', 'Time to sell', 'Order #s'];
+    var lines = [head].concat(rows.map(function (s) {
+      var v = splitVenue(s.venue);
+      return [fmt(s.soldAt, 'datetime'), s.artist, fmt(s.eventDate, 'date'), v.name, v.city, s.section, s.row, s.qty, s.costPer, s.soldPer, s.total, s.profit, s.roi, s.marketplace, s.timeToSell, (s.orders || []).join(' ')];
+    }));
+    var csv = lines.map(function (l) { return l.map(function (v) { v = v === null || v === undefined ? '' : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }).join(','); }).join('\n');
+    var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], {type: 'text/csv'})); a.download = 'sales.csv'; a.click();
+  }
   function render() {
     if (!S.R) return;
     if (!S.D) derive();
-    document.querySelectorAll('nav [data-tab]').forEach(function (b) { b.classList.toggle('on', b.dataset.tab === S.tab); });
-    var usesPeriod = !S.detail && ['overview', 'artists', 'venues', 'sales'].indexOf(S.tab) >= 0;
-    $('#period').hidden = !usesPeriod;
-    if (usesPeriod) renderPeriodControls();
+    var counts = {artists: Object.keys(S.D.artists).filter(function (n) { return S.D.artists[n].sales.length; }).length, venues: Object.keys(S.D.venues).filter(function (n) { return S.D.venues[n].sales.length; }).length, sales: S.R.sales.length};
+    document.querySelectorAll('nav [data-tab]').forEach(function (b) {
+      b.classList.toggle('on', b.dataset.tab === S.tab);
+      var c = counts[b.dataset.tab]; var base = b.dataset.label || (b.dataset.label = b.textContent);
+      b.innerHTML = esc(base) + (c ? ' <span class="cnt">' + c.toLocaleString() + '</span>' : '');
+    });
     var main = $('#view');
     var html;
     if (S.detail) html = S.detail.type === 'artist' ? viewArtist(S.detail.name) : viewVenue(S.detail.name);
     else html = ({overview: viewOverview, artists: viewArtists, venues: viewVenues, sales: viewSales, import: viewImport, extension: viewExtension}[S.tab] || viewOverview)();
     main.innerHTML = html;
-    wireTables(main); wireChart(main);
+    wireChart(main);
+    main.querySelectorAll('[data-period]').forEach(function (b) { b.onclick = function () { S.period = b.dataset.period; render(); }; });
+    var pp = $('#pickPeriod'); if (pp) pp.onchange = function () { if (pp.value) { S.period = pp.value; render(); } };
+    main.querySelectorAll('[data-sortchip]').forEach(function (b) { b.onclick = function () { S.sort[b.dataset.sortchip] = b.dataset.v; render(); }; });
+    main.querySelectorAll('[data-more]').forEach(function (b) { b.onclick = function () { S.limit = S.limit || {}; S.limit[b.dataset.more] = limitFor(b.dataset.more, 40) + 100; render(); }; });
+    main.querySelectorAll('[data-show]').forEach(function (b) { b.onclick = function () { S.openShow = S.openShow || {}; S.openShow[b.dataset.show] = !S.openShow[b.dataset.show]; var y = window.scrollY; render(); window.scrollTo(0, y); }; });
+    main.querySelectorAll('input[data-q]').forEach(function (inp) {
+      inp.oninput = function () {
+        var id = inp.dataset.q, pos = inp.selectionStart;
+        S.search[id] = inp.value; render();
+        var again = $('input[data-q="' + id + '"]'); if (again) { again.focus(); try { again.setSelectionRange(pos, pos); } catch (e) {} }
+      };
+    });
+    var cb = $('#csvBtn'); if (cb) cb.onclick = function () { downloadCsv(S._csv || []); };
     main.querySelectorAll('[data-rename]').forEach(function (b) {
       b.onclick = async function () {
         var old = b.dataset.rename, nn = window.prompt('Rename "' + old + '" to (type an existing artist name to merge them):', old);
@@ -755,12 +770,12 @@
       };
     });
     main.querySelectorAll('[data-delsale]').forEach(function (b) {
-      b.onclick = async function () {
+      b.onclick = async function (e) {
+        e.preventDefault();
         if (!window.confirm('Remove this sale from your tracker? (Discord is not affected. If it is imported again later it will come back.)')) return;
-        try { await S.store.deleteSale(b.dataset.delsale); await reload(); toast('Sale removed.'); } catch (e) { toast('Remove failed: ' + (e.message || e), true); }
+        try { await S.store.deleteSale(b.dataset.delsale); await reload(); toast('Sale removed.'); } catch (err) { toast('Remove failed: ' + (err.message || err), true); }
       };
     });
-    var all = $('#artistsAll'); if (all) all.onchange = function () { S.artistsAll = all.checked; render(); };
     if (S.tab === 'import' && !S.detail) {
       $('#csvFile').onchange = function (e) { if (e.target.files[0]) readCsvFile(e.target.files[0]); e.target.value = ''; };
       var drop = $('#csvDrop');
@@ -770,14 +785,10 @@
       var ta = $('#discordText'), t;
       ta.oninput = function () {
         clearTimeout(t);
-        t = setTimeout(function () {
-          var v = ta.value; if (!v.trim()) return;
-          importSales(v).catch(function (e) { toast('Save failed: ' + (e.message || e), true); });
-        }, 700);
+        t = setTimeout(function () { var v = ta.value; if (!v.trim()) return; importSales(v).catch(function (e) { toast('Save failed: ' + (e.message || e), true); }); }, 700);
       };
     }
-    var n = S.R.sales.length, o = S.R.orders.length;
-    $('#status').textContent = (S.store.demo ? 'Demo mode — nothing is saved · ' : '') + o.toLocaleString() + ' orders · ' + n.toLocaleString() + ' sales';
+    $('#status').textContent = (S.store.demo ? 'Demo mode — nothing is saved · ' : '') + S.R.orders.length.toLocaleString() + ' orders · ' + S.R.sales.length.toLocaleString() + ' sales';
   }
 
   // ---------- auth / boot ----------
